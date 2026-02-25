@@ -1,0 +1,27 @@
+# Automated Ingestion Pipeline - Dependencies
+
+# Web framework
+fastapi==0.115.0
+uvicorn==0.30.0
+python-multipart==0.0.9
+
+# Database
+asyncpg==0.31.0
+
+# Data validation
+pydantic==2.9.0
+
+# Environment
+python-dotenv==1.0.1
+
+# HTTP client (for future use)
+httpx==0.27.0
+aiofiles==24.1.0
+
+# LLM (for classification - Jan 28)
+openai==1.50.0
+langchain==0.3.0
+langchain-openai==0.2.0
+
+# PDF splitting (for parallel batch processing)
+pymupdf==1.25.3

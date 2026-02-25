@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Files - Ingestion Pipeline</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #333; min-height: 100vh; }
+
+        .header { background: #fff; border-bottom: 1px solid #e2e8f0; padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 20px; color: #1a1a2e; }
+        .nav a { color: #4361ee; text-decoration: none; font-size: 13px; margin-left: 12px; padding: 6px 14px; border: 1px solid #e2e8f0; border-radius: 6px; }
+        .nav a:hover { border-color: #4361ee; }
+
+        .container { max-width: 720px; margin: 40px auto; padding: 0 20px; }
+
+        .drop-zone { border: 2px dashed #cbd5e1; border-radius: 12px; padding: 60px 40px; text-align: center; background: #fff; cursor: pointer; transition: all 0.2s; }
+        .drop-zone:hover, .drop-zone.drag-over { border-color: #4361ee; background: #f0f4ff; }
+        .drop-zone.has-file { border-color: #2ec4b6; background: #f0fdf9; }
+        .drop-icon { font-size: 48px; margin-bottom: 12px; }
+        .drop-text { font-size: 16px; color: #64748b; margin-bottom: 8px; }
+        .drop-hint { font-size: 13px; color: #94a3b8; }
+        .file-list { text-align: left; margin-top: 12px; }
+        .file-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; background: #f8fafc; border-radius: 6px; margin-bottom: 4px; font-size: 13px; }
+        .file-item .name { font-weight: 600; color: #1a1a2e; }
+        .file-item .size { color: #64748b; }
+        .file-item .remove { color: #ef4444; cursor: pointer; font-weight: 600; padding: 2px 6px; border-radius: 4px; }
+        .file-item .remove:hover { background: #fef2f2; }
+        .file-input { display: none; }
+
+        .btn-row { margin-top: 20px; display: flex; gap: 12px; justify-content: center; }
+        .btn { padding: 10px 28px; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .btn-upload { background: #4361ee; color: #fff; }
+        .btn-upload:hover { background: #3a56d4; }
+        .btn-upload:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-clear { background: #e2e8f0; color: #64748b; }
+        .btn-clear:hover { background: #cbd5e1; }
+
+        .result { margin-top: 24px; border-radius: 10px; overflow: hidden; display: none; }
+        .result.show { display: block; }
+        .result-header { padding: 14px 20px; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+        .result-body { padding: 16px 20px; font-size: 13px; }
+        .result.success { background: #f0fdf4; border: 1px solid #bbf7d0; }
+        .result.success .result-header { color: #166534; }
+        .result.error { background: #fef2f2; border: 1px solid #fecaca; }
+        .result.error .result-header { color: #991b1b; }
+        .result.duplicate { background: #fefce8; border: 1px solid #fef08a; }
+        .result.duplicate .result-header { color: #854d0e; }
+        .result.processing { background: #eff6ff; border: 1px solid #bfdbfe; }
+        .result.processing .result-header { color: #1e40af; }
+
+        .detail-grid { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; }
+        .detail-label { font-weight: 600; color: #555; }
+        .detail-value { color: #333; word-break: break-all; }
+
+        .file-result { border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; }
+        .file-result.ok { border-color: #bbf7d0; background: #f0fdf4; }
+        .file-result.fail { border-color: #fecaca; background: #fef2f2; }
+        .file-result.hitl { border-color: #bfdbfe; background: #eff6ff; }
+        .file-result-title { font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+
+        .progress { margin-top: 20px; display: none; text-align: center; }
+        .progress.show { display: block; }
+        .spinner { width: 32px; height: 32px; border: 3px solid #e2e8f0; border-top-color: #4361ee; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 10px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .progress-text { font-size: 14px; color: #64748b; }
+
+        .supported { margin-top: 32px; background: #fff; border-radius: 10px; padding: 20px; border: 1px solid #e2e8f0; }
+        .supported h3 { font-size: 14px; color: #1a1a2e; margin-bottom: 10px; }
+        .type-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .type-item { font-size: 12px; color: #64748b; padding: 6px 10px; background: #f8fafc; border-radius: 6px; }
+        .type-item strong { color: #333; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Upload Files</h1>
+        <div class="nav">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/approve">SQL Approvals</a>
+            <a href="/hitl-review">HITL Review</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+            <div class="drop-icon">&#128196;</div>
+            <div class="drop-text" id="dropText">Drop file(s) here or click to browse</div>
+            <div class="drop-hint" id="dropHint">Supports PDF, CSV, XLSX, DOC, DOCX, TXT, JSON, XML &mdash; select multiple files at once</div>
+            <div class="file-list" id="fileList"></div>
+            <input type="file" id="fileInput" class="file-input" accept=".pdf,.csv,.xlsx,.doc,.docx,.txt,.json,.xml" multiple>
+        </div>
+
+        <div class="btn-row">
+            <button class="btn btn-upload" id="uploadBtn" disabled onclick="uploadFiles()">Upload & Process</button>
+            <button class="btn btn-clear" id="clearBtn" onclick="clearFiles()" style="display:none;">Clear All</button>
+        </div>
+
+        <div class="progress" id="progress">
+            <div class="spinner"></div>
+            <div class="progress-text" id="progressText">Uploading and processing...</div>
+        </div>
+
+        <div class="result" id="result">
+            <div class="result-header" id="resultHeader"></div>
+            <div class="result-body" id="resultBody"></div>
+        </div>
+
+        <div class="supported">
+            <h3>Supported File Types & Routing</h3>
+            <div class="type-grid">
+                <div class="type-item"><strong>.csv, .xlsx</strong> &rarr; SQL Pipeline</div>
+                <div class="type-item"><strong>.pdf</strong> &rarr; Vector Pipeline</div>
+                <div class="type-item"><strong>.doc, .docx</strong> &rarr; Vector Pipeline</div>
+                <div class="type-item"><strong>.txt</strong> &rarr; Vector Pipeline</div>
+                <div class="type-item"><strong>.json</strong> &rarr; HITL Review</div>
+                <div class="type-item"><strong>.xml</strong> &rarr; HITL Review</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = window.location.origin;
+        let selectedFiles = [];
+
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+
+        // Drag & drop
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length) addFiles(fileInput.files);
+        });
+
+        function addFiles(fileListObj) {
+            for (const f of fileListObj) {
+                // Avoid duplicate names
+                if (!selectedFiles.some(sf => sf.name === f.name && sf.size === f.size)) {
+                    selectedFiles.push(f);
+                }
+            }
+            renderFileList();
+        }
+
+        function removeFile(idx) {
+            selectedFiles.splice(idx, 1);
+            renderFileList();
+        }
+
+        function renderFileList() {
+            const list = document.getElementById('fileList');
+            const btn = document.getElementById('uploadBtn');
+            const clearBtn = document.getElementById('clearBtn');
+
+            if (!selectedFiles.length) {
+                list.innerHTML = '';
+                document.getElementById('dropText').textContent = 'Drop file(s) here or click to browse';
+                document.getElementById('dropHint').style.display = '';
+                btn.disabled = true;
+                clearBtn.style.display = 'none';
+                dropZone.classList.remove('has-file');
+                return;
+            }
+
+            document.getElementById('dropText').textContent = `${selectedFiles.length} file(s) selected:`;
+            document.getElementById('dropHint').style.display = 'none';
+            btn.disabled = false;
+            clearBtn.style.display = 'inline-block';
+            dropZone.classList.add('has-file');
+
+            list.innerHTML = selectedFiles.map((f, i) =>
+                `<div class="file-item">
+                    <span class="name">${f.name}</span>
+                    <span><span class="size">${formatSize(f.size)}</span>
+                    <span class="remove" onclick="event.stopPropagation(); removeFile(${i});">&times;</span></span>
+                </div>`
+            ).join('');
+
+            document.getElementById('result').className = 'result';
+        }
+
+        function clearFiles() {
+            selectedFiles = [];
+            fileInput.value = '';
+            renderFileList();
+        }
+
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1048576).toFixed(1) + ' MB';
+        }
+
+        async function uploadFiles() {
+            if (!selectedFiles.length) return;
+
+            const btn = document.getElementById('uploadBtn');
+            btn.disabled = true;
+            document.getElementById('progress').classList.add('show');
+            document.getElementById('result').className = 'result';
+
+            const isBatch = selectedFiles.length > 1;
+            const endpoint = isBatch
+                ? `${API}/inbound/upload-classify-process/batch`
+                : `${API}/inbound/upload-classify-process`;
+
+            const formData = new FormData();
+
+            if (isBatch) {
+                for (const f of selectedFiles) {
+                    formData.append('files', f);
+                }
+                document.getElementById('progressText').textContent =
+                    `Uploading and processing ${selectedFiles.length} files in parallel...`;
+            } else {
+                formData.append('file', selectedFiles[0]);
+                document.getElementById('progressText').textContent = 'Uploading and processing...';
+            }
+
+            try {
+                const resp = await fetch(endpoint, { method: 'POST', body: formData });
+                const data = await resp.json();
+
+                if (isBatch) {
+                    showBatchResult(data);
+                } else {
+                    showSingleResult(data, resp.status);
+                }
+            } catch (e) {
+                showError(e.message);
+            } finally {
+                document.getElementById('progress').classList.remove('show');
+                btn.disabled = false;
+            }
+        }
+
+        function showBatchResult(data) {
+            const result = document.getElementById('result');
+            const header = document.getElementById('resultHeader');
+            const body = document.getElementById('resultBody');
+
+            const allOk = data.failed === 0;
+            result.className = `result ${allOk ? 'success' : 'error'} show`;
+            header.textContent = data.message || `Batch: ${data.successful} succeeded, ${data.failed} failed`;
+
+            let html = '';
+
+            if (data.skipped && data.skipped.length) {
+                html += '<div style="margin-bottom:12px; color:#854d0e;"><strong>Skipped:</strong><ul style="margin:4px 0 0 18px;">';
+                for (const s of data.skipped) {
+                    html += `<li>${s.filename}: ${s.reason}${s.existing_file_id ? ' (ID: '+s.existing_file_id+')' : ''}</li>`;
+                }
+                html += '</ul></div>';
+            }
+
+            if (data.results) {
+                for (const r of data.results) {
+                    const cls = r.success ? (r.pipeline === 'hitl' ? 'hitl' : 'ok') : 'fail';
+                    html += `<div class="file-result ${cls}">`;
+                    html += `<div class="file-result-title">${r.filename || r.file_id}</div>`;
+                    html += '<div class="detail-grid">';
+                    html += `<span class="detail-label">File ID</span><span class="detail-value">${r.file_id || '-'}</span>`;
+                    html += `<span class="detail-label">Pipeline</span><span class="detail-value">${r.pipeline || '-'}</span>`;
+                    if (r.vector_file_id) html += `<span class="detail-label">Vector ID</span><span class="detail-value">${r.vector_file_id}</span>`;
+                    if (r.sql_job_id) {
+                        html += `<span class="detail-label">SQL Job ID</span><span class="detail-value">${r.sql_job_id}</span>`;
+                        html += `<span class="detail-label">SQL Status</span><span class="detail-value">${r.sql_status || '-'}</span>`;
+                    }
+                    if (r.error) html += `<span class="detail-label">Error</span><span class="detail-value">${r.error}</span>`;
+                    if (r.note) html += `<span class="detail-label">Note</span><span class="detail-value">${r.note}</span>`;
+                    html += '</div></div>';
+                }
+            }
+
+            body.innerHTML = html;
+        }
+
+        function showSingleResult(data, httpStatus) {
+            const result = document.getElementById('result');
+            const header = document.getElementById('resultHeader');
+            const body = document.getElementById('resultBody');
+
+            if (data.is_duplicate) {
+                result.className = 'result duplicate show';
+                header.textContent = 'Duplicate File Detected';
+                body.innerHTML = `<p>This file has already been uploaded. Existing file ID: <strong>${data.existing_file_id || '-'}</strong></p>`;
+                return;
+            }
+
+            if (httpStatus >= 400 || data.detail) {
+                result.className = 'result error show';
+                header.textContent = 'Upload Rejected';
+                body.innerHTML = `<p>${data.detail || JSON.stringify(data)}</p>`;
+                return;
+            }
+
+            const cls = data.classification || {};
+            const proc = data.processing || {};
+            const pipeline = proc.pipeline || '-';
+
+            let statusClass = 'success';
+            let statusText = 'Processed Successfully';
+
+            if (pipeline === 'hitl') {
+                statusClass = 'processing';
+                statusText = 'Sent to HITL Review Queue';
+            } else if (pipeline === 'sql' && proc.sql_status === 'awaiting_approval') {
+                statusClass = 'processing';
+                statusText = 'SQL Job Created - Awaiting Approval';
+            } else if (!proc.success && proc.error) {
+                statusClass = 'error';
+                statusText = 'Processing Failed';
+            }
+
+            result.className = `result ${statusClass} show`;
+            header.textContent = statusText;
+
+            const meta = cls.metadata || {};
+
+            let details = `
+                <div class="detail-grid">
+                    <span class="detail-label">File ID</span>
+                    <span class="detail-value">${data.upload?.file_id || '-'}</span>
+                    <span class="detail-label">Classification</span>
+                    <span class="detail-value">${cls.classification || '-'} (${cls.confidence ? (cls.confidence * 100).toFixed(0) + '%' : '-'})</span>
+                    <span class="detail-label">Routed To</span>
+                    <span class="detail-value">${cls.routed_to || '-'}</span>
+                    <span class="detail-label">Pipeline</span>
+                    <span class="detail-value">${pipeline}</span>`;
+
+            if (meta.major_domain) {
+                details += `
+                    <span class="detail-label">Domain</span>
+                    <span class="detail-value">${meta.major_domain}</span>`;
+            }
+            if (meta.sub_domain) {
+                details += `
+                    <span class="detail-label">Sub-domain</span>
+                    <span class="detail-value">${meta.sub_domain}</span>`;
+            }
+            if (meta.brief_summary) {
+                details += `
+                    <span class="detail-label">Summary</span>
+                    <span class="detail-value" style="grid-column:span 1">${meta.brief_summary}</span>`;
+            }
+
+            if (proc.vector_file_id) {
+                details += `
+                    <span class="detail-label">Vector File ID</span>
+                    <span class="detail-value">${proc.vector_file_id}</span>`;
+            }
+            if (proc.sql_job_id) {
+                details += `
+                    <span class="detail-label">SQL Job ID</span>
+                    <span class="detail-value">${proc.sql_job_id}</span>
+                    <span class="detail-label">SQL Status</span>
+                    <span class="detail-value">${proc.sql_status || '-'}</span>`;
+            }
+            if (proc.error) {
+                details += `
+                    <span class="detail-label">Error</span>
+                    <span class="detail-value">${proc.error}</span>`;
+            }
+            if (proc.note) {
+                details += `
+                    <span class="detail-label">Note</span>
+                    <span class="detail-value">${proc.note}</span>`;
+            }
+
+            details += '</div>';
+
+            if (pipeline === 'sql') {
+                details += '<p style="margin-top:12px;"><a href="/approve" style="color:#4361ee;">Go to SQL Approvals &rarr;</a></p>';
+            } else if (pipeline === 'hitl') {
+                details += '<p style="margin-top:12px;"><a href="/hitl-review" style="color:#4361ee;">Go to HITL Review &rarr;</a></p>';
+            }
+
+            body.innerHTML = details;
+        }
+
+        function showError(msg) {
+            const result = document.getElementById('result');
+            result.className = 'result error show';
+            document.getElementById('resultHeader').textContent = 'Error';
+            document.getElementById('resultBody').innerHTML = `<p>${msg}</p>`;
+        }
+    </script>
+</body>
+</html>

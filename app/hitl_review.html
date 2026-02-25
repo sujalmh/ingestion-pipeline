@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HITL Classification Review</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #333; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+        .header h1 { font-size: 24px; color: #1a1a2e; }
+        .nav-links a { color: #4361ee; text-decoration: none; margin-left: 16px; font-size: 14px; }
+        .nav-links a:hover { text-decoration: underline; }
+        .info-box { background: #e8f4fd; border: 1px solid #b6d4fe; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; font-size: 14px; color: #0c5460; }
+        .empty { text-align: center; padding: 60px 20px; color: #888; font-size: 18px; }
+        .card { background: #fff; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 16px; overflow: hidden; }
+        .card-header { padding: 16px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+        .card-header h3 { font-size: 16px; color: #1a1a2e; }
+        .badge { padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        .badge-hitl { background: #fff3cd; color: #856404; }
+        .card-body { padding: 16px 20px; }
+        .meta-row { display: flex; gap: 24px; margin-bottom: 12px; font-size: 13px; color: #666; }
+        .meta-row span { display: flex; align-items: center; gap: 4px; }
+        .meta-label { font-weight: 600; color: #444; }
+        .actions { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
+        .btn { padding: 8px 20px; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .btn-vector { background: #4361ee; color: white; }
+        .btn-vector:hover { background: #3a56d4; }
+        .btn-sql { background: #2ec4b6; color: white; }
+        .btn-sql:hover { background: #25a99d; }
+        .btn-reject { background: #e63946; color: white; }
+        .btn-reject:hover { background: #c5303c; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .status-msg { font-size: 13px; margin-left: 10px; font-weight: 600; }
+        .status-msg.success { color: #2d6a4f; }
+        .status-msg.error { color: #e63946; }
+        .status-msg.processing { color: #e9c46a; }
+        .loading { text-align: center; padding: 40px; color: #888; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>HITL Classification Review</h1>
+        <div class="nav-links">
+            <a href="/upload">Upload</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/approve">SQL Approvals</a>
+        </div>
+    </div>
+
+    <div class="info-box">
+        These files had low classification confidence. Choose the correct pipeline for each:
+        <strong>Vector</strong> (unstructured text/documents) or <strong>SQL</strong> (tabular/structured data).
+    </div>
+
+    <div id="container">
+        <div class="loading">Loading...</div>
+    </div>
+
+    <script>
+        const API = window.location.origin;
+
+        async function loadFiles() {
+            try {
+                const resp = await fetch(`${API}/hitl-review/pending`);
+                const data = await resp.json();
+                render(data.files || []);
+            } catch (e) {
+                document.getElementById('container').innerHTML = `<div class="empty">Error loading files: ${e.message}</div>`;
+            }
+        }
+
+        function render(files) {
+            const container = document.getElementById('container');
+            if (files.length === 0) {
+                container.innerHTML = '<div class="empty">No files pending HITL review.</div>';
+                return;
+            }
+            container.innerHTML = files.map(f => `
+                <div class="card" id="card-${f.id}">
+                    <div class="card-header">
+                        <h3>${f.original_filename}</h3>
+                        <span class="badge badge-hitl">Needs Review</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="meta-row">
+                            <span><span class="meta-label">Extension:</span> ${f.file_extension || '-'}</span>
+                            <span><span class="meta-label">Size:</span> ${formatSize(f.file_size)}</span>
+                            <span><span class="meta-label">Classification:</span> ${f.classification || '-'}</span>
+                            <span><span class="meta-label">Confidence:</span> ${f.classification_confidence ? (f.classification_confidence * 100).toFixed(0) + '%' : '-'}</span>
+                        </div>
+                        <div class="meta-row">
+                            <span><span class="meta-label">Uploaded:</span> ${f.created_at ? new Date(f.created_at).toLocaleString() : '-'}</span>
+                            <span><span class="meta-label">File ID:</span> ${f.id.substring(0, 8)}...</span>
+                        </div>
+                        <div class="actions" id="actions-${f.id}">
+                            <button class="btn btn-vector" onclick="processFile('${f.id}', 'vector')">Send to Vector</button>
+                            <button class="btn btn-sql" onclick="processFile('${f.id}', 'sql')">Send to SQL</button>
+                            <button class="btn btn-reject" onclick="rejectFile('${f.id}')">Reject</button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function formatSize(bytes) {
+            if (!bytes) return '-';
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1048576).toFixed(1) + ' MB';
+        }
+
+        async function processFile(fileId, pipeline) {
+            const actionsDiv = document.getElementById(`actions-${fileId}`);
+            actionsDiv.querySelectorAll('button').forEach(b => b.disabled = true);
+            actionsDiv.innerHTML += `<span class="status-msg processing">Processing...</span>`;
+
+            try {
+                const formData = new FormData();
+                formData.append('pipeline', pipeline);
+                const resp = await fetch(`${API}/hitl-review/${fileId}/process`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await resp.json();
+                const msgEl = actionsDiv.querySelector('.status-msg');
+                if (data.success) {
+                    msgEl.className = 'status-msg success';
+                    msgEl.textContent = `Done! Sent to ${pipeline} pipeline.`;
+                    document.getElementById(`card-${fileId}`).querySelector('.badge').textContent = 'Processed';
+                    document.getElementById(`card-${fileId}`).querySelector('.badge').style.background = '#d4edda';
+                    document.getElementById(`card-${fileId}`).querySelector('.badge').style.color = '#155724';
+                } else {
+                    msgEl.className = 'status-msg error';
+                    msgEl.textContent = `Failed: ${data.error || 'Unknown error'}`;
+                    actionsDiv.querySelectorAll('button').forEach(b => b.disabled = false);
+                }
+            } catch (e) {
+                const msgEl = actionsDiv.querySelector('.status-msg');
+                msgEl.className = 'status-msg error';
+                msgEl.textContent = `Error: ${e.message}`;
+                actionsDiv.querySelectorAll('button').forEach(b => b.disabled = false);
+            }
+        }
+
+        async function rejectFile(fileId) {
+            if (!confirm('Reject this file? It will be marked as failed.')) return;
+            const actionsDiv = document.getElementById(`actions-${fileId}`);
+            actionsDiv.querySelectorAll('button').forEach(b => b.disabled = true);
+
+            try {
+                const resp = await fetch(`${API}/hitl-review/${fileId}/reject`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    document.getElementById(`card-${fileId}`).querySelector('.badge').textContent = 'Rejected';
+                    document.getElementById(`card-${fileId}`).querySelector('.badge').style.background = '#f8d7da';
+                    document.getElementById(`card-${fileId}`).querySelector('.badge').style.color = '#721c24';
+                    actionsDiv.innerHTML = '<span class="status-msg error">Rejected.</span>';
+                }
+            } catch (e) {
+                actionsDiv.querySelectorAll('button').forEach(b => b.disabled = false);
+            }
+        }
+
+        loadFiles();
+    </script>
+</body>
+</html>

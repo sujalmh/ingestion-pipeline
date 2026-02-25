@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ingestion Pipeline Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e1e4ed;
+    --text2: #9498a8;
+    --accent: #6c8cff;
+    --green: #34d399;
+    --red: #f87171;
+    --yellow: #fbbf24;
+    --orange: #fb923c;
+    --purple: #a78bfa;
+    --cyan: #22d3ee;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; font-size:14px; }
+
+  .header { padding:20px 32px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+  .header h1 { font-size:20px; font-weight:600; }
+  .header .meta { color:var(--text2); font-size:13px; }
+  .header .refresh-btn { background:var(--accent); color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:13px; font-weight:500; }
+  .header .refresh-btn:hover { opacity:.85; }
+
+  .stats-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; padding:20px 32px; }
+  .stat-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  .stat-card .label { color:var(--text2); font-size:12px; text-transform:uppercase; letter-spacing:.5px; margin-bottom:6px; }
+  .stat-card .value { font-size:28px; font-weight:700; }
+  .stat-card .value.green { color:var(--green); }
+  .stat-card .value.red { color:var(--red); }
+  .stat-card .value.yellow { color:var(--yellow); }
+  .stat-card .value.blue { color:var(--accent); }
+  .stat-card .value.purple { color:var(--purple); }
+
+  .section { padding:16px 32px; }
+  .section h2 { font-size:16px; font-weight:600; margin-bottom:12px; display:flex; align-items:center; gap:8px; }
+  .section h2 .count { background:var(--border); padding:2px 8px; border-radius:10px; font-size:12px; color:var(--text2); }
+
+  .tabs { display:flex; gap:4px; margin-bottom:12px; }
+  .tab { background:transparent; border:1px solid var(--border); color:var(--text2); padding:6px 16px; border-radius:6px; cursor:pointer; font-size:13px; }
+  .tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+  table { width:100%; border-collapse:collapse; background:var(--surface); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  thead th { background:var(--bg); padding:10px 12px; text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.5px; color:var(--text2); border-bottom:1px solid var(--border); white-space:nowrap; position:relative; }
+  thead th.sortable { cursor:pointer; user-select:none; padding-right:20px; }
+  thead th.sortable:hover { color:var(--text); }
+  thead th.sortable::after { content:''; position:absolute; right:6px; top:50%; transform:translateY(-50%); font-size:10px; opacity:.4; }
+  thead th.sort-asc::after { content:'\25B2'; opacity:1; color:var(--accent); }
+  thead th.sort-desc::after { content:'\25BC'; opacity:1; color:var(--accent); }
+  tbody td { padding:8px 12px; border-bottom:1px solid var(--border); font-size:13px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  tbody tr:hover { background:rgba(108,140,255,.06); }
+  tbody tr:last-child td { border-bottom:none; }
+
+  .badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; text-transform:uppercase; }
+  .badge-done { background:rgba(52,211,153,.15); color:var(--green); }
+  .badge-failed { background:rgba(248,113,113,.15); color:var(--red); }
+  .badge-processing { background:rgba(251,191,36,.15); color:var(--yellow); }
+  .badge-classified { background:rgba(167,139,250,.15); color:var(--purple); }
+  .badge-uploaded { background:rgba(108,140,255,.15); color:var(--accent); }
+  .badge-vector { background:rgba(34,211,238,.12); color:var(--cyan); }
+  .badge-sql { background:rgba(251,146,60,.12); color:var(--orange); }
+  .badge-hitl { background:rgba(167,139,250,.12); color:var(--purple); }
+
+  .detail-row { display:none; }
+  .detail-row td { padding:12px 16px; background:rgba(108,140,255,.03); white-space:normal; max-width:none; }
+  .detail-row.open { display:table-row; }
+  .detail-content { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .detail-content .group { background:var(--bg); padding:12px; border-radius:6px; border:1px solid var(--border); }
+  .detail-content .group h4 { font-size:12px; color:var(--text2); text-transform:uppercase; margin-bottom:8px; }
+  .detail-content .group .item { margin-bottom:4px; font-size:12px; }
+  .detail-content .group .item .k { color:var(--text2); }
+  .detail-content .group .item .v { color:var(--text); }
+
+  .expand-btn { background:none; border:none; color:var(--accent); cursor:pointer; font-size:16px; padding:0 4px; }
+
+  .table-scroll { overflow-x:auto; border-radius:8px; }
+
+  .filter-row { display:flex; gap:8px; margin-bottom:12px; align-items:center; }
+  .filter-row select, .filter-row input { background:var(--surface); border:1px solid var(--border); color:var(--text); padding:6px 10px; border-radius:6px; font-size:13px; }
+  .filter-row input { width:200px; }
+  .filter-row label { color:var(--text2); font-size:12px; }
+
+  .error-text { color:var(--red); font-size:12px; max-width:300px; overflow:hidden; text-overflow:ellipsis; }
+  .meta-id { font-family:monospace; font-size:11px; color:var(--text2); }
+
+  .loading { text-align:center; padding:60px; color:var(--text2); }
+  .op-meta-section { margin-top:8px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>Ingestion Pipeline Dashboard</h1>
+    <div class="meta" id="lastUpdated">Loading...</div>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;">
+    <a href="/upload" style="color:var(--accent);text-decoration:none;font-size:13px;padding:6px 14px;border:1px solid var(--border);border-radius:6px;">Upload</a>
+    <a href="/approve" style="color:var(--accent);text-decoration:none;font-size:13px;padding:6px 14px;border:1px solid var(--border);border-radius:6px;">Approval Queue</a>
+    <a href="/hitl-review" style="color:var(--accent);text-decoration:none;font-size:13px;padding:6px 14px;border:1px solid var(--border);border-radius:6px;">HITL Review</a>
+    <label style="color:var(--text2);font-size:12px;"><input type="checkbox" id="autoRefresh" checked> Auto-refresh 15s</label>
+    <button class="refresh-btn" onclick="loadData()">Refresh</button>
+  </div>
+</div>
+
+<div class="stats-row" id="statsRow">
+  <div class="stat-card"><div class="label">Total Files</div><div class="value blue" id="statTotal">-</div></div>
+  <div class="stat-card"><div class="label">Done</div><div class="value green" id="statDone">-</div></div>
+  <div class="stat-card"><div class="label">Processing</div><div class="value yellow" id="statProcessing">-</div></div>
+  <div class="stat-card"><div class="label">Failed</div><div class="value red" id="statFailed">-</div></div>
+  <div class="stat-card"><div class="label">Classified</div><div class="value purple" id="statClassified">-</div></div>
+  <div class="stat-card"><div class="label">Vector Pipeline</div><div class="value" style="color:var(--cyan)" id="statVector">-</div></div>
+  <div class="stat-card"><div class="label">SQL Pipeline</div><div class="value" style="color:var(--orange)" id="statSql">-</div></div>
+  <div class="stat-card"><div class="label">HITL Queue</div><div class="value" style="color:var(--purple)" id="statHitl">-</div></div>
+</div>
+
+<div class="section">
+  <h2>Inbound Files <span class="count" id="fileCount">0</span></h2>
+
+  <div class="filter-row">
+    <label>Status:</label>
+    <select id="filterStatus" onchange="renderTable()">
+      <option value="">All</option>
+      <option value="done">Done</option>
+      <option value="processing">Processing</option>
+      <option value="failed">Failed</option>
+      <option value="classified">Classified</option>
+      <option value="uploaded">Uploaded</option>
+    </select>
+    <label>Classification:</label>
+    <select id="filterClassification" onchange="renderTable()">
+      <option value="">All</option>
+      <option value="structured">Structured</option>
+      <option value="unstructured">Unstructured</option>
+      <option value="unknown">Unknown</option>
+    </select>
+    <label>Route:</label>
+    <select id="filterRoute" onchange="renderTable()">
+      <option value="">All</option>
+      <option value="vector_pipeline">Vector</option>
+      <option value="sql_otl">SQL OTL</option>
+      <option value="sql_inc">SQL INC</option>
+      <option value="hitl">HITL</option>
+    </select>
+    <label>Search:</label>
+    <input type="text" id="filterSearch" placeholder="filename..." oninput="renderTable()">
+  </div>
+
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th class="sortable" onclick="sortBy('original_filename')">Filename</th>
+          <th class="sortable" onclick="sortBy('file_extension')">Ext</th>
+          <th class="sortable" onclick="sortBy('file_size')">Size</th>
+          <th class="sortable" onclick="sortBy('classification')">Classification</th>
+          <th class="sortable" onclick="sortBy('classification_confidence')">Confidence</th>
+          <th class="sortable" onclick="sortBy('routed_to')">Route</th>
+          <th class="sortable" onclick="sortBy('status')">Status</th>
+          <th>Vector ID</th>
+          <th>SQL Job / Error</th>
+          <th>Op Meta ID</th>
+          <th class="sortable" onclick="sortBy('created_at')">Created</th>
+        </tr>
+      </thead>
+      <tbody id="fileTableBody">
+        <tr><td colspan="12" class="loading">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section op-meta-section">
+  <h2>Operational Metadata (Recent) <span class="count" id="opMetaCount">0</span></h2>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Table Name</th>
+          <th>Major Domain</th>
+          <th>Sub Domain</th>
+          <th>Brief Summary</th>
+          <th>Rows</th>
+          <th>Source URL</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody id="opMetaBody">
+        <tr><td colspan="8" class="loading">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section">
+  <h2>SQL Tables Metadata (Recent) <span class="count" id="sqlMetaCount">0</span></h2>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Table Name</th>
+          <th>Domain</th>
+          <th>Source</th>
+          <th>Source URL</th>
+          <th>Rows</th>
+          <th>Columns</th>
+          <th>Released</th>
+          <th>Updated</th>
+        </tr>
+      </thead>
+      <tbody id="sqlMetaBody">
+        <tr><td colspan="8" class="loading">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div style="height:40px;"></div>
+
+<script>
+let allFiles = [];
+let opMeta = [];
+let sqlMeta = [];
+let refreshTimer = null;
+let sortField = 'created_at';
+let sortDir = 'desc';
+
+function sortBy(field) {
+  if (sortField === field) {
+    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortField = field;
+    sortDir = 'asc';
+  }
+  updateSortIndicators();
+  renderTable();
+}
+
+function updateSortIndicators() {
+  document.querySelectorAll('thead th.sortable').forEach(th => {
+    th.classList.remove('sort-asc', 'sort-desc');
+  });
+  const ths = document.querySelectorAll('thead th.sortable');
+  ths.forEach(th => {
+    const clickAttr = th.getAttribute('onclick') || '';
+    const match = clickAttr.match(/sortBy\('(.+?)'\)/);
+    if (match && match[1] === sortField) {
+      th.classList.add(sortDir === 'asc' ? 'sort-asc' : 'sort-desc');
+    }
+  });
+}
+
+function statusBadge(s) {
+  const cls = { done:'badge-done', failed:'badge-failed', processing:'badge-processing', classified:'badge-classified', uploaded:'badge-uploaded' }[s] || 'badge-uploaded';
+  return `<span class="badge ${cls}">${esc(s||'unknown')}</span>`;
+}
+function routeBadge(r) {
+  if (!r) return '-';
+  const cls = r.startsWith('sql') ? 'badge-sql' : r === 'vector_pipeline' ? 'badge-vector' : 'badge-hitl';
+  return `<span class="badge ${cls}">${esc(r)}</span>`;
+}
+function esc(s) { if(!s) return ''; const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function fmtSize(b) { if(!b) return '-'; if(b<1024) return b+'B'; if(b<1048576) return (b/1024).toFixed(1)+'K'; return (b/1048576).toFixed(1)+'M'; }
+function fmtDate(d) { if(!d) return '-'; return new Date(d).toLocaleString('en-IN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}); }
+function shortId(id) { return id ? id.substring(0,8) : '-'; }
+
+function renderTable() {
+  const fStatus = document.getElementById('filterStatus').value;
+  const fClassification = document.getElementById('filterClassification').value;
+  const fRoute = document.getElementById('filterRoute').value;
+  const fSearch = document.getElementById('filterSearch').value.toLowerCase();
+
+  let filtered = allFiles.filter(f => {
+    if (fStatus && f.status !== fStatus) return false;
+    if (fClassification && f.classification !== fClassification) return false;
+    if (fRoute && f.routed_to !== fRoute) return false;
+    if (fSearch && !(f.original_filename||'').toLowerCase().includes(fSearch)) return false;
+    return true;
+  });
+
+  // Sort
+  if (sortField) {
+    filtered.sort((a, b) => {
+      let va = a[sortField], vb = b[sortField];
+      if (va == null) va = '';
+      if (vb == null) vb = '';
+      // Numeric fields
+      if (sortField === 'file_size' || sortField === 'classification_confidence') {
+        va = Number(va) || 0;
+        vb = Number(vb) || 0;
+      } else if (sortField === 'created_at') {
+        va = va ? new Date(va).getTime() : 0;
+        vb = vb ? new Date(vb).getTime() : 0;
+      } else {
+        va = String(va).toLowerCase();
+        vb = String(vb).toLowerCase();
+      }
+      if (va < vb) return sortDir === 'asc' ? -1 : 1;
+      if (va > vb) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
+
+  document.getElementById('fileCount').textContent = filtered.length;
+
+  if (filtered.length === 0) {
+    document.getElementById('fileTableBody').innerHTML = '<tr><td colspan="12" class="loading">No files match filter</td></tr>';
+    return;
+  }
+
+  let html = '';
+  filtered.forEach((f, i) => {
+    const errOrJob = f.error_message
+      ? (f.error_message.startsWith('sql_job_id:')
+        ? `<span class="meta-id">Job: ${esc(f.error_message.replace('sql_job_id:','').substring(0,12))}</span>`
+        : `<span class="error-text" title="${esc(f.error_message)}">${esc(f.error_message.substring(0,50))}</span>`)
+      : '-';
+
+    html += `<tr onclick="toggleDetail(${i})" style="cursor:pointer">
+      <td><button class="expand-btn" id="expandBtn${i}">+</button></td>
+      <td title="${esc(f.original_filename)}"><strong>${esc(f.original_filename||'?')}</strong></td>
+      <td>${esc(f.file_extension||'')}</td>
+      <td>${fmtSize(f.file_size)}</td>
+      <td>${esc(f.classification||'-')}</td>
+      <td>${f.classification_confidence ? (f.classification_confidence*100).toFixed(0)+'%' : '-'}</td>
+      <td>${routeBadge(f.routed_to)}</td>
+      <td>${statusBadge(f.status)}</td>
+      <td><span class="meta-id">${shortId(f.vector_file_id)}</span></td>
+      <td>${errOrJob}</td>
+      <td>${f.operational_metadata_id || '-'}</td>
+      <td>${fmtDate(f.created_at)}</td>
+    </tr>`;
+
+    // Detail row
+    const opRow = f.operational_metadata_id ? opMeta.find(o => o.id === f.operational_metadata_id) : null;
+    html += `<tr class="detail-row" id="detail${i}"><td colspan="12"><div class="detail-content">
+      <div class="group">
+        <h4>File Details</h4>
+        <div class="item"><span class="k">ID:</span> <span class="v meta-id">${esc(f.id)}</span></div>
+        <div class="item"><span class="k">Source:</span> <span class="v">${esc(f.source_type||'-')}</span></div>
+        <div class="item"><span class="k">MIME:</span> <span class="v">${esc(f.mime_type||'-')}</span></div>
+        <div class="item"><span class="k">SHA256:</span> <span class="v meta-id">${esc((f.sha256_hash||'').substring(0,16))}...</span></div>
+        <div class="item"><span class="k">Retry count:</span> <span class="v">${f.retry_count||0}</span></div>
+        <div class="item"><span class="k">Path:</span> <span class="v meta-id">${esc((f.file_path||'').split('/').pop())}</span></div>
+        ${f.error_message ? `<div class="item"><span class="k">Error/Note:</span> <span class="v error-text" style="max-width:none;white-space:normal">${esc(f.error_message)}</span></div>` : ''}
+      </div>
+      <div class="group">
+        <h4>Processing Timeline</h4>
+        <div class="item"><span class="k">Created:</span> <span class="v">${fmtDate(f.created_at)}</span></div>
+        <div class="item"><span class="k">Classified:</span> <span class="v">${fmtDate(f.classification_completed_at)}</span></div>
+        <div class="item"><span class="k">Processing started:</span> <span class="v">${fmtDate(f.processing_started_at)}</span></div>
+        <div class="item"><span class="k">Processing completed:</span> <span class="v">${fmtDate(f.processing_completed_at)}</span></div>
+        ${f.vector_file_id ? `<div class="item"><span class="k">Vector file ID:</span> <span class="v meta-id">${esc(f.vector_file_id)}</span></div>` : ''}
+      </div>
+      ${opRow ? `<div class="group" style="grid-column:1/-1">
+        <h4>Operational Metadata (ID: ${opRow.id})</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+          <div class="item"><span class="k">Table:</span> <span class="v">${esc(opRow.table_name)}</span></div>
+          <div class="item"><span class="k">Domain:</span> <span class="v">${esc(opRow.major_domain)}</span></div>
+          <div class="item"><span class="k">Sub-domain:</span> <span class="v">${esc(opRow.sub_domain)}</span></div>
+          <div class="item" style="grid-column:1/-1"><span class="k">Summary:</span> <span class="v">${esc(opRow.brief_summary)}</span></div>
+          <div class="item"><span class="k">Rows:</span> <span class="v">${opRow.rows_count||'-'}</span></div>
+          <div class="item"><span class="k">Source URL:</span> <span class="v">${esc(opRow.source_url||'-')}</span></div>
+        </div>
+      </div>` : ''}
+    </div></td></tr>`;
+  });
+
+  document.getElementById('fileTableBody').innerHTML = html;
+}
+
+function toggleDetail(i) {
+  const row = document.getElementById('detail'+i);
+  const btn = document.getElementById('expandBtn'+i);
+  if (row.classList.contains('open')) {
+    row.classList.remove('open');
+    btn.textContent = '+';
+  } else {
+    row.classList.add('open');
+    btn.textContent = '−';
+  }
+}
+
+function renderOpMeta() {
+  const recent = opMeta.slice(0, 30);
+  document.getElementById('opMetaCount').textContent = opMeta.length;
+  if (recent.length === 0) {
+    document.getElementById('opMetaBody').innerHTML = '<tr><td colspan="8" class="loading">No operational metadata</td></tr>';
+    return;
+  }
+  let html = '';
+  recent.forEach(o => {
+    html += `<tr>
+      <td>${o.id}</td>
+      <td title="${esc(o.table_name)}">${esc((o.table_name||'').substring(0,35))}</td>
+      <td>${esc(o.major_domain||'-')}</td>
+      <td>${esc(o.sub_domain||'-')}</td>
+      <td title="${esc(o.brief_summary)}">${esc((o.brief_summary||'').substring(0,80))}</td>
+      <td>${o.rows_count||'-'}</td>
+      <td><span class="meta-id">${esc((o.source_url||'-').substring(0,30))}</span></td>
+      <td>${fmtDate(o.created_at)}</td>
+    </tr>`;
+  });
+  document.getElementById('opMetaBody').innerHTML = html;
+}
+
+function renderSqlMeta() {
+  document.getElementById('sqlMetaCount').textContent = sqlMeta.length;
+  if (sqlMeta.length === 0) {
+    document.getElementById('sqlMetaBody').innerHTML = '<tr><td colspan="8" class="loading">No SQL tables metadata</td></tr>';
+    return;
+  }
+  const recent = sqlMeta.slice(0, 30);
+  let html = '';
+  recent.forEach(s => {
+    html += `<tr>
+      <td title="${esc(s.table_name)}">${esc((s.table_name||'').substring(0,35))}</td>
+      <td>${esc(s.data_domain||'-')}</td>
+      <td>${esc((s.source||'-').substring(0,25))}</td>
+      <td><span class="meta-id">${esc((s.source_url||'-').substring(0,30))}</span></td>
+      <td>${s.rows_count||'-'}</td>
+      <td title="${esc(s.columns)}">${esc((s.columns||'').substring(0,40))}</td>
+      <td>${fmtDate(s.released_on)}</td>
+      <td>${fmtDate(s.updated_on)}</td>
+    </tr>`;
+  });
+  document.getElementById('sqlMetaBody').innerHTML = html;
+}
+
+async function loadData() {
+  try {
+    const resp = await fetch('/dashboard/data');
+    const data = await resp.json();
+
+    allFiles = data.files || [];
+    opMeta = data.operational_metadata || [];
+    sqlMeta = data.tables_metadata || [];
+
+    // Stats
+    const total = allFiles.length;
+    const byStatus = {};
+    const byRoute = {};
+    allFiles.forEach(f => {
+      byStatus[f.status] = (byStatus[f.status]||0) + 1;
+      if (f.routed_to) byRoute[f.routed_to] = (byRoute[f.routed_to]||0) + 1;
+    });
+
+    document.getElementById('statTotal').textContent = total;
+    document.getElementById('statDone').textContent = byStatus['done'] || 0;
+    document.getElementById('statProcessing').textContent = byStatus['processing'] || 0;
+    document.getElementById('statFailed').textContent = byStatus['failed'] || 0;
+    document.getElementById('statClassified').textContent = byStatus['classified'] || 0;
+    document.getElementById('statVector').textContent = byRoute['vector_pipeline'] || 0;
+    document.getElementById('statSql').textContent = (byRoute['sql_otl']||0) + (byRoute['sql_inc']||0);
+    document.getElementById('statHitl').textContent = byRoute['hitl'] || 0;
+
+    document.getElementById('lastUpdated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+
+    renderTable();
+    renderOpMeta();
+    renderSqlMeta();
+  } catch (e) {
+    console.error('Failed to load dashboard data:', e);
+    document.getElementById('lastUpdated').textContent = 'Error loading data: ' + e.message;
+  }
+}
+
+// Auto-refresh
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    if (document.getElementById('autoRefresh').checked) loadData();
+  }, 15000);
+}
+
+loadData();
+startAutoRefresh();
+updateSortIndicators();
+</script>
+</body>
+</html>

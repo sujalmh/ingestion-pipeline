@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SQL Pipeline - Approve / Reject</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --text: #e1e4ed; --text2: #9498a8; --accent: #6c8cff;
+    --green: #34d399; --red: #f87171; --yellow: #fbbf24;
+    --orange: #fb923c; --purple: #a78bfa; --cyan: #22d3ee;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; font-size:14px; }
+
+  .header { padding:20px 32px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+  .header h1 { font-size:20px; font-weight:600; }
+  .header .nav { display:flex; gap:12px; align-items:center; }
+  .header .nav a { color:var(--accent); text-decoration:none; font-size:13px; padding:6px 14px; border:1px solid var(--border); border-radius:6px; }
+  .header .nav a:hover { border-color:var(--accent); }
+  .header .meta { color:var(--text2); font-size:13px; }
+
+  .content { max-width:1100px; margin:0 auto; padding:24px 32px; }
+
+  .empty-state { text-align:center; padding:80px 20px; color:var(--text2); }
+  .empty-state h2 { font-size:18px; margin-bottom:8px; color:var(--text); }
+
+  .file-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:20px; overflow:hidden; }
+  .file-card.approved { border-color:var(--green); opacity:.7; }
+  .file-card.rejected { border-color:var(--red); opacity:.7; }
+  .file-card.expired { border-color:var(--text2); opacity:.5; }
+
+  .card-header { padding:16px 20px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); }
+  .card-header .filename { font-size:16px; font-weight:600; }
+  .card-header .badges { display:flex; gap:8px; align-items:center; }
+
+  .badge { display:inline-block; padding:3px 10px; border-radius:4px; font-size:11px; font-weight:600; text-transform:uppercase; }
+  .badge-awaiting { background:rgba(251,191,36,.15); color:var(--yellow); }
+  .badge-approved { background:rgba(52,211,153,.15); color:var(--green); }
+  .badge-completed { background:rgba(52,211,153,.15); color:var(--green); }
+  .badge-rejected { background:rgba(248,113,113,.15); color:var(--red); }
+  .badge-failed { background:rgba(248,113,113,.15); color:var(--red); }
+  .badge-expired { background:rgba(148,152,168,.15); color:var(--text2); }
+  .badge-sql { background:rgba(251,146,60,.12); color:var(--orange); }
+
+  .card-body { padding:20px; }
+
+  .preview-section { margin-bottom:16px; }
+  .preview-section h3 { font-size:13px; color:var(--text2); text-transform:uppercase; letter-spacing:.5px; margin-bottom:10px; }
+
+  .meta-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px,1fr)); gap:8px; margin-bottom:16px; }
+  .meta-item { font-size:13px; }
+  .meta-item .k { color:var(--text2); }
+  .meta-item .v { color:var(--text); font-weight:500; }
+
+  .columns-table { width:100%; border-collapse:collapse; font-size:12px; margin-bottom:16px; }
+  .columns-table th { background:var(--bg); padding:6px 10px; text-align:left; color:var(--text2); text-transform:uppercase; font-size:11px; }
+  .columns-table td { padding:6px 10px; border-bottom:1px solid var(--border); }
+
+  .sample-table { width:100%; border-collapse:collapse; font-size:12px; overflow-x:auto; display:block; }
+  .sample-table th { background:var(--bg); padding:6px 10px; text-align:left; color:var(--text2); font-size:11px; white-space:nowrap; }
+  .sample-table td { padding:6px 10px; border-bottom:1px solid var(--border); white-space:nowrap; max-width:200px; overflow:hidden; text-overflow:ellipsis; }
+
+  .approval-form { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:20px; margin-top:16px; }
+  .approval-form h3 { font-size:14px; margin-bottom:14px; color:var(--text); }
+  .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .form-group { display:flex; flex-direction:column; gap:4px; }
+  .form-group.full { grid-column:1/-1; }
+  .form-group label { font-size:12px; color:var(--text2); }
+  .form-group input, .form-group textarea { background:var(--surface); border:1px solid var(--border); color:var(--text); padding:8px 12px; border-radius:6px; font-size:13px; font-family:inherit; }
+  .form-group input:focus, .form-group textarea:focus { outline:none; border-color:var(--accent); }
+  .form-group textarea { resize:vertical; min-height:60px; }
+  .form-group .hint { font-size:11px; color:var(--text2); }
+
+  .btn-row { display:flex; gap:10px; margin-top:16px; }
+  .btn { padding:10px 24px; border:none; border-radius:6px; font-size:14px; font-weight:600; cursor:pointer; }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .btn-approve { background:var(--green); color:#000; }
+  .btn-approve:hover:not(:disabled) { opacity:.85; }
+  .btn-reject { background:transparent; border:1px solid var(--red); color:var(--red); }
+  .btn-reject:hover:not(:disabled) { background:rgba(248,113,113,.1); }
+  .btn-reprocess { background:transparent; border:1px solid var(--accent); color:var(--accent); font-size:12px; padding:6px 14px; }
+
+  .result-banner { padding:12px 16px; border-radius:6px; margin-top:12px; font-size:13px; }
+  .result-banner.success { background:rgba(52,211,153,.1); border:1px solid var(--green); color:var(--green); }
+  .result-banner.error { background:rgba(248,113,113,.1); border:1px solid var(--red); color:var(--red); }
+
+  .loading { text-align:center; padding:60px; color:var(--text2); }
+  .spinner { display:inline-block; width:18px; height:18px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; margin-right:8px; vertical-align:middle; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>SQL Pipeline - Approve / Reject</h1>
+    <div class="meta" id="statusLine">Loading pending jobs...</div>
+  </div>
+  <div class="nav">
+    <a href="/upload">Upload</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/approve" style="border-color:var(--accent);">Approval Queue</a>
+    <a href="/hitl-review">HITL Review</a>
+  </div>
+</div>
+
+<div class="content" id="content">
+  <div class="loading"><span class="spinner"></span> Loading pending approvals...</div>
+</div>
+
+<script>
+function esc(s) { if(!s) return ''; const d=document.createElement('div'); d.textContent=String(s); return d.innerHTML; }
+function fmtSize(b) { if(!b) return '-'; if(b<1024) return b+'B'; if(b<1048576) return (b/1024).toFixed(1)+'K'; return (b/1048576).toFixed(1)+'M'; }
+function fmtDate(d) { if(!d) return '-'; return new Date(d).toLocaleString('en-IN',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}); }
+
+function renderCard(f, idx) {
+  const sqlJobStatus = f.sql_job_status || 'unknown';
+  const preview = f.preview;
+  const ilPreview = f.incremental_load_preview;
+  const jobId = f.sql_job_id;
+  const isIncrementalPipeline = !!ilPreview || sqlJobStatus === 'schema_mismatch' || sqlJobStatus === 'incremental_load_completed';
+
+  let badgeCls = 'badge-awaiting';
+  let cardCls = '';
+  if (sqlJobStatus === 'completed' || sqlJobStatus === 'approved' || sqlJobStatus === 'incremental_load_completed') { badgeCls = 'badge-approved'; cardCls = 'approved'; }
+  else if (sqlJobStatus === 'failed' || sqlJobStatus === 'rejected') { badgeCls = 'badge-failed'; cardCls = 'rejected'; }
+  else if (sqlJobStatus === 'expired') { badgeCls = 'badge-expired'; cardCls = 'expired'; }
+
+  let previewHtml = '';
+  if (ilPreview) {
+    const mt = ilPreview.matched_table || {};
+    const vr = ilPreview.validation_result || {};
+    previewHtml = `
+      <div class="preview-section"><h3>SQL Incremental Load Pipeline</h3></div>
+      <div class="meta-grid">
+        <div class="meta-item"><span class="k">Append to table:</span> <span class="v">${esc(mt.table_name)}</span></div>
+        <div class="meta-item"><span class="k">Similarity:</span> <span class="v">${typeof mt.similarity_score === 'number' ? (mt.similarity_score * 100).toFixed(0) + '%' : '-'}</span></div>
+        <div class="meta-item"><span class="k">Current rows:</span> <span class="v">${ilPreview.current_rows_count ?? '-'}</span></div>
+        <div class="meta-item"><span class="k">New rows:</span> <span class="v">${ilPreview.new_rows_count ?? '-'}</span></div>
+        <div class="meta-item"><span class="k">Total after:</span> <span class="v">${ilPreview.total_rows_after ?? '-'}</span></div>
+      </div>
+      <div class="preview-section"><h3>Schema validation</h3>
+        <p style="color:var(--text2);font-size:13px">Match: ${vr.match_percentage != null ? (vr.match_percentage * 100).toFixed(0) + '%' : '-'} &middot; Compatible: ${vr.is_compatible ? 'Yes' : 'No'}</p>
+      </div>`;
+  } else if (preview) {
+    // Columns
+    let colsHtml = '';
+    (preview.columns || []).forEach(c => {
+      const samples = (c.sample_values || []).map(v => esc(String(v))).join(', ');
+      colsHtml += `<tr><td><strong>${esc(c.name)}</strong></td><td style="color:var(--cyan)">${esc(c.type)}</td><td style="color:var(--text2)">${samples}</td></tr>`;
+    });
+
+    // Sample rows
+    let sampleHtml = '';
+    const sampleRows = preview.sample_rows || [];
+    const colNames = (preview.columns || []).map(c => c.name);
+    if (sampleRows.length > 0) {
+      let ths = colNames.map(n => `<th>${esc(n)}</th>`).join('');
+      let trs = sampleRows.slice(0, 5).map(row => {
+        let tds = colNames.map(n => `<td title="${esc(String(row[n]||''))}">${esc(String(row[n]||''))}</td>`).join('');
+        return `<tr>${tds}</tr>`;
+      }).join('');
+      sampleHtml = `<div class="preview-section"><h3>Sample Data (${preview.total_rows || '?'} total rows)</h3>
+        <div style="overflow-x:auto"><table class="sample-table"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div></div>`;
+    }
+
+    // LLM metadata
+    let llmHtml = '';
+    if (preview.llm_metadata) {
+      const lm = preview.llm_metadata;
+      llmHtml = `<div class="meta-grid">
+        <div class="meta-item"><span class="k">Suggested domain:</span> <span class="v">${esc(lm.suggested_domain)}</span></div>
+        <div class="meta-item"><span class="k">Period column:</span> <span class="v">${esc(lm.period_column || 'none')}</span></div>
+        <div class="meta-item" style="grid-column:1/-1"><span class="k">Description:</span> <span class="v">${esc(lm.description)}</span></div>
+      </div>`;
+    }
+
+    previewHtml = `
+      <div class="meta-grid">
+        <div class="meta-item"><span class="k">Proposed table:</span> <span class="v">${esc(preview.proposed_table_name)}</span></div>
+        <div class="meta-item"><span class="k">Total rows:</span> <span class="v">${preview.total_rows || '?'}</span></div>
+        <div class="meta-item" style="grid-column:1/-1"><span class="k">Preprocessing:</span> <span class="v">${esc(preview.preprocessing_summary)}</span></div>
+      </div>
+      ${llmHtml}
+      <div class="preview-section"><h3>Schema (${(preview.columns||[]).length} columns)</h3>
+        <table class="columns-table"><thead><tr><th>Column</th><th>Type</th><th>Sample Values</th></tr></thead><tbody>${colsHtml}</tbody></table>
+      </div>
+      ${sampleHtml}`;
+  } else if (sqlJobStatus === 'expired') {
+    previewHtml = `<p style="color:var(--text2)">This job has expired on the SQL pipeline API. Click "Re-process" to create a new job.</p>`;
+  } else {
+    previewHtml = `<p style="color:var(--text2)">No preview available (status: ${esc(sqlJobStatus)})</p>`;
+  }
+
+  // Approval form for awaiting_approval (OTL) or schema_mismatch (incremental load)
+  let formHtml = '';
+  if (sqlJobStatus === 'awaiting_approval' || (sqlJobStatus === 'schema_mismatch' && ilPreview)) {
+    formHtml = `<div class="approval-form" id="form-${idx}">
+      <h3>Approve with Metadata</h3>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Source *</label>
+          <input type="text" id="source-${idx}" placeholder="e.g. Ministry of Finance">
+        </div>
+        <div class="form-group">
+          <label>Source URL *</label>
+          <input type="text" id="source_url-${idx}" placeholder="e.g. https://example.gov.in/data">
+        </div>
+        <div class="form-group">
+          <label>Released On *</label>
+          <input type="date" id="released_on-${idx}" value="${new Date().toISOString().split('T')[0]}">
+        </div>
+        <div class="form-group">
+          <label>Updated On *</label>
+          <input type="date" id="updated_on-${idx}" value="${new Date().toISOString().split('T')[0]}">
+        </div>
+        <div class="form-group">
+          <label>Table Name <span class="hint">(optional${ilPreview ? ', append to matched table if blank' : ', uses proposed if blank'})</span></label>
+          <input type="text" id="table_name-${idx}" placeholder="${esc(ilPreview?.matched_table?.table_name || preview?.proposed_table_name || '')}">
+        </div>
+        <div class="form-group">
+          <label>Business Metadata <span class="hint">(optional)</span></label>
+          <input type="text" id="biz_meta-${idx}" placeholder="Description for business use">
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-approve" id="approveBtn-${idx}" onclick="approveFile('${f.id}', ${idx})">Approve</button>
+        <button class="btn btn-reject" id="rejectBtn-${idx}" onclick="rejectFile('${f.id}', ${idx})">Reject</button>
+      </div>
+      <div id="result-${idx}"></div>
+    </div>`;
+  } else if (sqlJobStatus === 'expired') {
+    formHtml = `<div class="btn-row" style="padding:16px 0 0 0">
+      <button class="btn btn-reprocess" onclick="reprocessFile('${f.id}', ${idx})">Re-process (re-upload to SQL pipeline API)</button>
+      <div id="result-${idx}"></div>
+    </div>`;
+  }
+
+  return `<div class="file-card ${cardCls}" id="card-${idx}">
+    <div class="card-header">
+      <div>
+        <span class="filename">${esc(f.original_filename)}</span>
+        <span style="color:var(--text2);font-size:12px;margin-left:8px">${fmtSize(f.file_size)} &middot; ${esc(f.file_extension)}</span>
+      </div>
+      <div class="badges">
+        <span class="badge badge-sql">${isIncrementalPipeline ? 'SQL Incremental Load' : (f.routed_to || 'SQL OTL')}</span>
+        <span class="badge ${badgeCls}">${esc(sqlJobStatus)}</span>
+      </div>
+    </div>
+    <div class="card-body">
+      ${previewHtml}
+      ${formHtml}
+    </div>
+  </div>`;
+}
+
+async function approveFile(fileId, idx) {
+  const btn = document.getElementById(`approveBtn-${idx}`);
+  const rejectBtn = document.getElementById(`rejectBtn-${idx}`);
+  const resultDiv = document.getElementById(`result-${idx}`);
+
+  const source = document.getElementById(`source-${idx}`).value.trim();
+  const source_url = document.getElementById(`source_url-${idx}`).value.trim();
+  const released_on = document.getElementById(`released_on-${idx}`).value;
+  const updated_on = document.getElementById(`updated_on-${idx}`).value;
+  const table_name = document.getElementById(`table_name-${idx}`).value.trim();
+  const biz_meta = document.getElementById(`biz_meta-${idx}`).value.trim();
+
+  if (!source || !source_url || !released_on || !updated_on) {
+    resultDiv.innerHTML = '<div class="result-banner error">Please fill in all required fields (Source, Source URL, Released On, Updated On)</div>';
+    return;
+  }
+
+  btn.disabled = true;
+  rejectBtn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Approving...';
+  resultDiv.innerHTML = '';
+
+  const formData = new FormData();
+  formData.append('source', source);
+  formData.append('source_url', source_url);
+  formData.append('released_on', released_on + 'T00:00:00');
+  formData.append('updated_on', updated_on + 'T00:00:00');
+  if (table_name) formData.append('table_name', table_name);
+  if (biz_meta) formData.append('business_metadata', biz_meta);
+
+  try {
+    const resp = await fetch(`/approve/${fileId}/approve-sql`, { method: 'POST', body: formData });
+    const data = await resp.json();
+
+    const ok = resp.ok && (data.success || data.sql_job_status === 'incremental_load_completed');
+    if (ok) {
+      resultDiv.innerHTML = `<div class="result-banner success">
+        Approved and inserted! Table: <strong>${esc(data.table_name)}</strong>
+        ${data.result ? ` &middot; ${data.result.rows_inserted} rows inserted` : (data.sql_job_status === 'incremental_load_completed' ? ' &middot; Incremental load completed' : '')}
+      </div>`;
+      document.getElementById(`card-${idx}`).classList.add('approved');
+      btn.innerHTML = 'Approved';
+    } else {
+      const errMsg = data.detail || data.sql_job_status || 'Unknown error';
+      resultDiv.innerHTML = `<div class="result-banner error">Approval failed: ${esc(typeof errMsg === 'object' ? JSON.stringify(errMsg) : errMsg)}</div>`;
+      btn.innerHTML = 'Approve';
+      btn.disabled = false;
+      rejectBtn.disabled = false;
+    }
+  } catch (e) {
+    resultDiv.innerHTML = `<div class="result-banner error">Network error: ${esc(e.message)}</div>`;
+    btn.innerHTML = 'Approve';
+    btn.disabled = false;
+    rejectBtn.disabled = false;
+  }
+}
+
+async function rejectFile(fileId, idx) {
+  const btn = document.getElementById(`rejectBtn-${idx}`);
+  const approveBtn = document.getElementById(`approveBtn-${idx}`);
+  const resultDiv = document.getElementById(`result-${idx}`);
+
+  if (!confirm('Are you sure you want to reject this file?')) return;
+
+  btn.disabled = true;
+  approveBtn.disabled = true;
+  btn.innerHTML = 'Rejecting...';
+
+  try {
+    const resp = await fetch(`/approve/${fileId}/reject-sql`, { method: 'POST' });
+    const data = await resp.json();
+
+    if (resp.ok && data.success) {
+      resultDiv.innerHTML = '<div class="result-banner error">File rejected.</div>';
+      document.getElementById(`card-${idx}`).classList.add('rejected');
+      btn.innerHTML = 'Rejected';
+    } else {
+      resultDiv.innerHTML = `<div class="result-banner error">Reject failed: ${esc(data.detail || 'Unknown error')}</div>`;
+      btn.innerHTML = 'Reject';
+      btn.disabled = false;
+      approveBtn.disabled = false;
+    }
+  } catch (e) {
+    resultDiv.innerHTML = `<div class="result-banner error">Network error: ${esc(e.message)}</div>`;
+    btn.innerHTML = 'Reject';
+    btn.disabled = false;
+    approveBtn.disabled = false;
+  }
+}
+
+async function reprocessFile(fileId, idx) {
+  const resultDiv = document.getElementById(`result-${idx}`);
+  resultDiv.innerHTML = '<span class="spinner"></span> Re-uploading to SQL pipeline API...';
+
+  try {
+    const resp = await fetch(`/inbound/files/${fileId}/process-sql`, { method: 'POST' });
+    const data = await resp.json();
+
+    if (resp.ok && data.success) {
+      resultDiv.innerHTML = `<div class="result-banner success">Re-processed! New job created. Refreshing...</div>`;
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      resultDiv.innerHTML = `<div class="result-banner error">Re-process failed: ${esc(data.detail || data.error || 'Unknown error')}</div>`;
+    }
+  } catch (e) {
+    resultDiv.innerHTML = `<div class="result-banner error">Network error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function loadPending() {
+  try {
+    const resp = await fetch('/approve/pending');
+    const data = await resp.json();
+    const files = data.files || [];
+
+    const awaiting = files.filter(f => f.sql_job_status === 'awaiting_approval');
+    const others = files.filter(f => f.sql_job_status !== 'awaiting_approval');
+
+    document.getElementById('statusLine').textContent =
+      `${awaiting.length} awaiting approval, ${others.length} other SQL jobs in processing`;
+
+    if (files.length === 0) {
+      document.getElementById('content').innerHTML = `<div class="empty-state">
+        <h2>No SQL files pending</h2>
+        <p>All SQL pipeline files have been processed. Upload new files via the pipeline to see them here.</p>
+        <p style="margin-top:16px"><a href="/dashboard" style="color:var(--accent)">Go to Dashboard</a></p>
+      </div>`;
+      return;
+    }
+
+    // Render awaiting first, then others
+    let html = '';
+    const sorted = [...awaiting, ...others];
+    sorted.forEach((f, i) => { html += renderCard(f, i); });
+    document.getElementById('content').innerHTML = html;
+  } catch (e) {
+    document.getElementById('content').innerHTML =
+      `<div class="empty-state"><h2>Error loading data</h2><p>${esc(e.message)}</p></div>`;
+  }
+}
+
+loadPending();
+</script>
+</body>
+</html>

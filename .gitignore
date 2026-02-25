@@ -1,0 +1,117 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest / Testing
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+._newtest
+._testfiles
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+._.env
+._.env.example
+
+# Logs & History
+*.log
+logs/
+.bash_history
+.node_repl_history
+.lesshst
+.viminfo
+
+# Uploads / Local Data
+uploads/
+._uploads
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files & Caching
+.DS_Store
+Thumbs.db
+._*
+.cache/
+.config/
+.local/
+.dbus-keyrings/
+
+# AI Coding Assistants & Tools
+.cline/
+.codegpt/
+.copilot/
+.cursor/
+.cursor-sandbox/
+.gemini/
+.antigravity/
+.kiro/
+
+# Cloud & Deployment
+.aws/
+.azure/
+.boto/
+.docker/
+
+# Package Managers / Frameworks / Environments
+.anaconda/
+.conda/
+.condarc
+.continuum/
+.bun/
+.chocolatey/
+.expo/
+.gradle/
+.nuget/
+.pnpm-store/
+.vcpkg/
+.yarnrc
+.VirtualBox/
+.arduinoIDE/
+.platformio/
+.openjfx/
+
+# Data Science, ML & Automation Tools
+.EasyOCR/
+.ipython/
+.keras/
+.matplotlib/
+.ollama/
+.paddleocr/
+.paddlex/
+.torch/
+.wdm/
+.streamlit/
+.crawl4ai/
+
+# Other VM / User Files
+.android/
+.app-store/
+.armlm/
+.icesoft/
+.jwt_tool/
+.lunarclient/
+.ms-ad/
+.sbx-denybin/
+.ssh/
+._deploy.sh
+._server.log
+._app
+.849C9593-D756-4E56-8D6E-42412F2A707B

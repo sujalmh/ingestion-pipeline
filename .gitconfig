@@ -1,0 +1,21 @@
+[user]
+	email = sujalmh9@gmail.com
+	name = sujalmh9@gmail.com
+[credential "https://red-ocean-84f233c5b1b1461fba9839e6fb6bc5d3.scm.azurewebsites.net"]
+	provider = generic
+[credential "https://proud-mushroom-133d372adfbf400aaecd6e74f47b359e.scm.azurewebsites.net"]
+	provider = generic
+[credential "https://proud-mushroom-133d372adfbf400aaecd6e74f-deploy2.scm.azurewebsites.net"]
+	provider = generic
+[credential "https://ambitious-bay-a9c919f2d6364d1fbc4468a1e3756d7b.scm.azurewebsites.net"]
+	provider = generic
+[credential "https://zealous-dune-b2beb67d2b014a15aeeba1103899a199.scm.azurewebsites.net"]
+	provider = generic
+[credential "https://clone123.scm.azurewebsites.net"]
+	provider = generic
+[credential "https://results-quizapp.scm.azurewebsites.net"]
+	provider = generic
+[credential "https://repo.mic.gov.in"]
+	provider = generic
+[includeIf "gitdir:S:/college/diya-mjorproj/"]
+    path = .gitconfig-work
