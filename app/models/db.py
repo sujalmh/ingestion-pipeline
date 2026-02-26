@@ -196,6 +196,16 @@ async def insert_inbound_file(
     """
     pool = await get_db_pool()
     async with pool.acquire() as conn:
+        # Clean up stale failed/rejected records so retries can re-ingest.
+        await conn.execute(
+            """
+            DELETE FROM inbound_files_metadata
+            WHERE sha256_hash = $1
+              AND status IN ('failed', 'rejected');
+            """,
+            sha256_hash,
+        )
+
         file_id = await conn.fetchval(
             """
             INSERT INTO inbound_files_metadata (
@@ -420,20 +430,31 @@ async def get_inbound_files(
 
 async def check_duplicate_hash(sha256_hash: str) -> Optional[Dict[str, Any]]:
     """
-    Check if a file with the given hash already exists.
+    Check if a file with the given hash already exists in an active state.
     
     Returns:
         Existing file record if duplicate found, None otherwise.
     """
+    live_statuses = (
+        "open_request",
+        "classifying",
+        "classified",
+        "processing",
+        "done",
+        "completed",
+        "incremental_load_completed",
+    )
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         record = await conn.fetchrow(
             """
             SELECT id::text, original_filename, status, created_at
             FROM inbound_files_metadata
-            WHERE sha256_hash = $1;
+            WHERE sha256_hash = $1
+              AND status = ANY($2::text[]);
             """,
-            sha256_hash
+            sha256_hash,
+            list(live_statuses),
         )
         return dict(record) if record else None
 
@@ -457,10 +478,7 @@ async def insert_operational_metadata(
     table_view: Optional[str] = None,
 ) -> int:
     """
-    Insert a new operational metadata entry.
-    
-    This is called after classification to store the base-level metadata
-    (domain, subdomain, summary) for every file.
+    Insert or update an operational metadata entry.
     
     Returns:
         The ID of the newly created record.
@@ -476,6 +494,20 @@ async def insert_operational_metadata(
                 first_available_value, last_available_value,
                 business_metadata, created_at, updated_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (table_name)
+            DO UPDATE SET
+                table_view = COALESCE(EXCLUDED.table_view, operational_metadata.table_view),
+                source_url = COALESCE(EXCLUDED.source_url, operational_metadata.source_url),
+                major_domain = COALESCE(EXCLUDED.major_domain, operational_metadata.major_domain),
+                sub_domain = COALESCE(EXCLUDED.sub_domain, operational_metadata.sub_domain),
+                brief_summary = COALESCE(EXCLUDED.brief_summary, operational_metadata.brief_summary),
+                rows_count = COALESCE(EXCLUDED.rows_count, operational_metadata.rows_count),
+                columns = COALESCE(EXCLUDED.columns, operational_metadata.columns),
+                period_cols = COALESCE(EXCLUDED.period_cols, operational_metadata.period_cols),
+                first_available_value = COALESCE(EXCLUDED.first_available_value, operational_metadata.first_available_value),
+                last_available_value = COALESCE(EXCLUDED.last_available_value, operational_metadata.last_available_value),
+                business_metadata = COALESCE(EXCLUDED.business_metadata, operational_metadata.business_metadata),
+                updated_at = CURRENT_TIMESTAMP
             RETURNING id;
             """,
             table_name,

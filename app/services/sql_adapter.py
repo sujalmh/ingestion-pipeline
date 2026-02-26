@@ -51,7 +51,11 @@ class SQLPipelineResult:
     error: Optional[str] = None
 
 
-async def upload_to_sql_pipeline(file_path: str) -> Dict[str, Any]:
+async def upload_to_sql_pipeline(
+    file_path: str,
+    table_name: Optional[str] = None,
+    skip_llm_table_name: bool = False,
+) -> Dict[str, Any]:
     """
     Upload a file to SQL Ingestion API.
     
@@ -63,10 +67,16 @@ async def upload_to_sql_pipeline(file_path: str) -> Dict[str, Any]:
     """
     url = f"{settings.SQL_PIPELINE_API_URL}/upload"
     
+    form_data: Dict[str, str] = {}
+    if table_name:
+        form_data["table_name"] = table_name
+        if skip_llm_table_name:
+            form_data["skip_llm_table_name"] = "true"
+
     async with httpx.AsyncClient(timeout=settings.SQL_UPLOAD_TIMEOUT) as client:
         with open(file_path, "rb") as f:
             files = {"file": f}
-            response = await client.post(url, files=files)
+            response = await client.post(url, files=files, data=form_data or None)
             response.raise_for_status()
     
     data = response.json()
@@ -108,7 +118,11 @@ async def get_sql_job_status(job_id: str) -> Dict[str, Any]:
     }
 
 
-async def process_sql_pipeline(file_id: str) -> SQLPipelineResult:
+async def process_sql_pipeline(
+    file_id: str,
+    preferred_table_name: Optional[str] = None,
+    skip_llm_table_name: bool = False,
+) -> SQLPipelineResult:
     """
     Upload a file to SQL Ingestion API for processing.
     
@@ -152,7 +166,11 @@ async def process_sql_pipeline(file_id: str) -> SQLPipelineResult:
     try:
         # Upload to SQL Ingestion API
         try:
-            upload_result = await upload_to_sql_pipeline(file_path)
+            upload_result = await upload_to_sql_pipeline(
+                file_path,
+                table_name=preferred_table_name,
+                skip_llm_table_name=skip_llm_table_name,
+            )
         except httpx.TimeoutException as e:
             await update_inbound_status(
                 file_id, "failed",

@@ -14,7 +14,7 @@ how the file should be processed.
 """
 import aiofiles
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.config import settings
 from app.models.db import (
@@ -22,6 +22,8 @@ from app.models.db import (
     update_inbound_status,
     insert_operational_metadata,
     exists_completed_sql_load_for_table,
+    check_operational_metadata_exists,
+    update_operational_metadata,
 )
 from app.models.schemas import (
     FileStatus,
@@ -41,7 +43,10 @@ class ClassificationOrchestrator:
         self.confidence_threshold = settings.CLASSIFICATION_CONFIDENCE_THRESHOLD
 
     async def classify_and_extract(
-        self, file_id: str
+        self,
+        file_id: str,
+        sql_mode: Optional[str] = None,
+        table_name_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run full classification and metadata extraction for a file.
@@ -104,20 +109,49 @@ class ClassificationOrchestrator:
             table_name = filename
             if classification_result.classification == Classification.STRUCTURED:
                 table_name = Path(filename).stem
+                if table_name_override:
+                    table_name = table_name_override
             routing = await self._determine_routing(
-                classification_result, llm_metadata, table_name
+                classification_result,
+                llm_metadata,
+                table_name,
+                sql_mode=sql_mode,
             )
 
             # Step 5: Create operational_metadata entry
             # For PDFs, table_name stays as filename; for structured it's stem (set above)
-            operational_id = await insert_operational_metadata(
-                table_name=table_name,
-                source_url=file_record.get("source_url"),
-                major_domain=llm_metadata.major_domain,
-                sub_domain=llm_metadata.sub_domain,
-                brief_summary=llm_metadata.brief_summary,
-                rows_count=None,  # Will be filled by processing pipeline
-            )
+            if (
+                classification_result.classification == Classification.STRUCTURED
+                and sql_mode == "inc"
+                and table_name_override
+            ):
+                existing_op_id = await check_operational_metadata_exists(table_name)
+                if existing_op_id:
+                    await update_operational_metadata(
+                        record_id=existing_op_id,
+                        major_domain=llm_metadata.major_domain,
+                        sub_domain=llm_metadata.sub_domain,
+                        brief_summary=llm_metadata.brief_summary,
+                    )
+                    operational_id = existing_op_id
+                else:
+                    operational_id = await insert_operational_metadata(
+                        table_name=table_name,
+                        source_url=file_record.get("source_url"),
+                        major_domain=llm_metadata.major_domain,
+                        sub_domain=llm_metadata.sub_domain,
+                        brief_summary=llm_metadata.brief_summary,
+                        rows_count=None,
+                    )
+            else:
+                operational_id = await insert_operational_metadata(
+                    table_name=table_name,
+                    source_url=file_record.get("source_url"),
+                    major_domain=llm_metadata.major_domain,
+                    sub_domain=llm_metadata.sub_domain,
+                    brief_summary=llm_metadata.brief_summary,
+                    rows_count=None,  # Will be filled by processing pipeline
+                )
 
             # Step 6: Update inbound_files_metadata
             await update_inbound_status(
@@ -186,21 +220,31 @@ class ClassificationOrchestrator:
         return f"[Binary file: {file_path.name}]"
 
     async def _determine_routing(
-        self, classification_result, llm_metadata=None, table_name: str = ""
+        self,
+        classification_result,
+        llm_metadata=None,
+        table_name: str = "",
+        sql_mode: Optional[str] = None,
     ) -> RoutingDecision:
         """
         Determine routing from classification and, for structured files,
         from DB history: first load for table -> sql_otl, subsequent -> sql_inc.
         """
-        # Low confidence -> HITL
-        if classification_result.confidence < self.confidence_threshold:
-            return RoutingDecision.HITL
-
         # Route based on classification
         if classification_result.classification == Classification.UNSTRUCTURED:
             return RoutingDecision.VECTOR_PIPELINE
 
         if classification_result.classification == Classification.STRUCTURED:
+            # Explicit user choice (OTL/INC) takes precedence for structured files.
+            if sql_mode == "otl":
+                return RoutingDecision.SQL_OTL
+            if sql_mode == "inc":
+                return RoutingDecision.SQL_INC
+
+            # Low confidence without explicit override -> HITL
+            if classification_result.confidence < self.confidence_threshold:
+                return RoutingDecision.HITL
+
             # First load = no completed SQL load for this table (or parent); else incremental
             has_prior = await exists_completed_sql_load_for_table(table_name)
             return RoutingDecision.SQL_INC if has_prior else RoutingDecision.SQL_OTL
@@ -213,11 +257,19 @@ class ClassificationOrchestrator:
 classification_orchestrator = ClassificationOrchestrator()
 
 
-async def classify_file_by_id(file_id: str) -> Dict[str, Any]:
+async def classify_file_by_id(
+    file_id: str,
+    sql_mode: Optional[str] = None,
+    table_name: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Convenience function to classify a file by ID.
     """
-    return await classification_orchestrator.classify_and_extract(file_id)
+    return await classification_orchestrator.classify_and_extract(
+        file_id,
+        sql_mode=sql_mode,
+        table_name_override=table_name,
+    )
 
 
 async def classify_all_pending() -> Dict[str, Any]:

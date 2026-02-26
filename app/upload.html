@@ -71,6 +71,18 @@
         .type-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
         .type-item { font-size: 12px; color: #64748b; padding: 6px 10px; background: #f8fafc; border-radius: 6px; }
         .type-item strong { color: #333; }
+
+        .sql-controls { margin-top: 16px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; display: none; }
+        .sql-controls.show { display: block; }
+        .sql-controls h3 { font-size: 14px; color: #1a1a2e; margin-bottom: 10px; }
+        .sql-controls-note { font-size: 12px; color: #64748b; margin-bottom: 12px; }
+        .sql-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .sql-form-group { display: flex; flex-direction: column; gap: 6px; }
+        .sql-form-group label { font-size: 12px; color: #475569; font-weight: 600; }
+        .sql-form-group input, .sql-form-group select { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; font-size: 13px; color: #1f2937; background: #fff; }
+        .sql-form-group input:focus, .sql-form-group select:focus { outline: none; border-color: #4361ee; box-shadow: 0 0 0 3px #e0e7ff; }
+        .sql-form-group input:disabled { background: #f1f5f9; color: #94a3b8; cursor: not-allowed; }
+        .sql-required { color: #dc2626; }
     </style>
 </head>
 <body>
@@ -90,6 +102,25 @@
             <div class="drop-hint" id="dropHint">Supports PDF, CSV, XLSX, DOC, DOCX, TXT, JSON, XML &mdash; select multiple files at once</div>
             <div class="file-list" id="fileList"></div>
             <input type="file" id="fileInput" class="file-input" accept=".pdf,.csv,.xlsx,.doc,.docx,.txt,.json,.xml" multiple>
+        </div>
+
+        <div class="sql-controls" id="sqlControls">
+            <h3>Structured File SQL Routing</h3>
+            <div class="sql-controls-note">Required for single <strong>.csv/.xlsx</strong> uploads.</div>
+            <div class="sql-form-grid">
+                <div class="sql-form-group">
+                    <label>Load Mode <span class="sql-required">*</span></label>
+                    <select id="sqlMode">
+                        <option value="auto">Auto</option>
+                        <option value="otl">OTL</option>
+                        <option value="inc">INC</option>
+                    </select>
+                </div>
+                <div class="sql-form-group">
+                    <label>Table Name <span class="sql-required" id="tableNameRequired">*</span></label>
+                    <input type="text" id="tableName" placeholder="Enter target table name">
+                </div>
+            </div>
         </div>
 
         <div class="btn-row">
@@ -126,6 +157,13 @@
 
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('fileInput');
+        const sqlControls = document.getElementById('sqlControls');
+        const sqlModeInput = document.getElementById('sqlMode');
+        const tableNameInput = document.getElementById('tableName');
+        const tableNameRequired = document.getElementById('tableNameRequired');
+
+        sqlModeInput.addEventListener('change', updateUploadButtonState);
+        tableNameInput.addEventListener('input', updateUploadButtonState);
 
         // Drag & drop
         dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
@@ -167,14 +205,17 @@
                 btn.disabled = true;
                 clearBtn.style.display = 'none';
                 dropZone.classList.remove('has-file');
+                hideSqlControls(true);
                 return;
             }
 
             document.getElementById('dropText').textContent = `${selectedFiles.length} file(s) selected:`;
             document.getElementById('dropHint').style.display = 'none';
-            btn.disabled = false;
             clearBtn.style.display = 'inline-block';
             dropZone.classList.add('has-file');
+
+            toggleSqlControlsBySelection();
+            updateUploadButtonState();
 
             list.innerHTML = selectedFiles.map((f, i) =>
                 `<div class="file-item">
@@ -193,6 +234,63 @@
             renderFileList();
         }
 
+        function isStructuredFilename(filename) {
+            const parts = String(filename || '').toLowerCase().split('.');
+            const ext = parts.length > 1 ? parts[parts.length - 1] : '';
+            return ext === 'csv' || ext === 'xlsx' || ext === 'xls';
+        }
+
+        function isSingleStructuredSelection() {
+            return selectedFiles.length === 1 && isStructuredFilename(selectedFiles[0].name);
+        }
+
+        function hideSqlControls(resetValues) {
+            sqlControls.classList.remove('show');
+            if (resetValues) {
+                sqlModeInput.value = 'auto';
+                tableNameInput.value = '';
+            }
+            tableNameInput.disabled = false;
+            tableNameRequired.style.display = '';
+        }
+
+        function toggleSqlControlsBySelection() {
+            if (isSingleStructuredSelection()) {
+                sqlControls.classList.add('show');
+                return;
+            }
+            hideSqlControls(true);
+        }
+
+        function updateUploadButtonState() {
+            const btn = document.getElementById('uploadBtn');
+            if (!selectedFiles.length) {
+                btn.disabled = true;
+                return;
+            }
+
+            if (!isSingleStructuredSelection()) {
+                btn.disabled = false;
+                return;
+            }
+
+            const mode = sqlModeInput.value;
+            if (mode === 'auto') {
+                tableNameInput.value = '';
+                tableNameInput.disabled = true;
+                tableNameRequired.style.display = 'none';
+                btn.disabled = false;
+                return;
+            }
+
+            tableNameInput.disabled = false;
+            tableNameRequired.style.display = '';
+
+            const hasMode = mode === 'otl' || mode === 'inc';
+            const hasTableName = tableNameInput.value.trim().length > 0;
+            btn.disabled = !(hasMode && hasTableName);
+        }
+
         function formatSize(bytes) {
             if (bytes < 1024) return bytes + ' B';
             if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
@@ -201,6 +299,24 @@
 
         async function uploadFiles() {
             if (!selectedFiles.length) return;
+
+            const requireSqlRouting = isSingleStructuredSelection();
+            if (requireSqlRouting) {
+                const selectedMode = sqlModeInput.value;
+                if (selectedMode !== 'auto' && selectedMode !== 'otl' && selectedMode !== 'inc') {
+                    showError('For single CSV/XLSX uploads, select Auto, OTL, or INC.');
+                    return;
+                }
+
+                const hasMode = selectedMode === 'otl' || selectedMode === 'inc';
+                const hasTableName = tableNameInput.value.trim().length > 0;
+                if (!hasMode || !hasTableName) {
+                    if (selectedMode !== 'auto') {
+                        showError('For single CSV/XLSX uploads, provide a table name when OTL/INC is selected.');
+                        return;
+                    }
+                }
+            }
 
             const btn = document.getElementById('uploadBtn');
             btn.disabled = true;
@@ -222,6 +338,12 @@
                     `Uploading and processing ${selectedFiles.length} files in parallel...`;
             } else {
                 formData.append('file', selectedFiles[0]);
+                if (requireSqlRouting) {
+                    formData.append('sql_mode', sqlModeInput.value);
+                    if (sqlModeInput.value !== 'auto') {
+                        formData.append('table_name', tableNameInput.value.trim());
+                    }
+                }
                 document.getElementById('progressText').textContent = 'Uploading and processing...';
             }
 
@@ -238,7 +360,7 @@
                 showError(e.message);
             } finally {
                 document.getElementById('progress').classList.remove('show');
-                btn.disabled = false;
+                updateUploadButtonState();
             }
         }
 
@@ -287,6 +409,14 @@
             const result = document.getElementById('result');
             const header = document.getElementById('resultHeader');
             const body = document.getElementById('resultBody');
+
+            if (data && data.success === false) {
+                result.className = 'result error show';
+                header.textContent = 'Processing Failed';
+                const err = data.classification?.error || data.processing?.error || data.message || 'Unknown error';
+                body.innerHTML = `<p>${err}</p>`;
+                return;
+            }
 
             if (data.is_duplicate) {
                 result.className = 'result duplicate show';

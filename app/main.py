@@ -399,13 +399,17 @@ async def upload_and_classify(
             }
         raise HTTPException(status_code=400, detail=upload_result.message)
 
+    file_id = upload_result.file_id
+    if not file_id:
+        raise HTTPException(status_code=500, detail="Upload succeeded but file_id is missing.")
+
     # Classify the file
-    classification_result = await classify_file_by_id(upload_result.file_id)
+    classification_result = await classify_file_by_id(file_id)
 
     return {
         "success": True,
         "upload": {
-            "file_id": upload_result.file_id,
+            "file_id": file_id,
             "filename": upload_result.filename,
         },
         "classification": classification_result,
@@ -620,6 +624,8 @@ async def upload_classify_and_process(
     source_type: SourceType = Form(default=SourceType.DIRECT_UPLOAD),
     source_identifier: Optional[str] = Form(default=None),
     source_url: Optional[str] = Form(default=None),
+    sql_mode: Optional[str] = Form(default=None),
+    table_name: Optional[str] = Form(default=None),
 ):
     """
     Complete end-to-end processing: Upload -> Classify -> Route to appropriate pipeline.
@@ -634,6 +640,29 @@ async def upload_classify_and_process(
     
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
+
+    ext = Path(file.filename).suffix.lower()
+    is_structured_upload = ext in (".csv", ".xlsx", ".xls")
+
+    normalized_sql_mode = (sql_mode or "").strip().lower()
+    normalized_table_name = (table_name or "").strip()
+
+    if normalized_sql_mode and normalized_sql_mode not in ("auto", "otl", "inc"):
+        raise HTTPException(status_code=400, detail="Invalid sql_mode. Use 'auto', 'otl', or 'inc'.")
+
+    if is_structured_upload:
+        if not normalized_sql_mode:
+            normalized_sql_mode = "auto"
+        if normalized_sql_mode in ("otl", "inc") and not normalized_table_name:
+            raise HTTPException(status_code=400, detail="Structured CSV/XLSX upload requires table_name.")
+    else:
+        normalized_sql_mode = ""
+        normalized_table_name = ""
+
+    # Auto mode uses existing routing logic and does not override table name.
+    if normalized_sql_mode == "auto":
+        normalized_sql_mode = ""
+        normalized_table_name = ""
     
     # Step 1: Upload
     content = await file.read()
@@ -656,9 +685,15 @@ async def upload_classify_and_process(
         raise HTTPException(status_code=400, detail=upload_result.message)
     
     file_id = upload_result.file_id
+    if not file_id:
+        raise HTTPException(status_code=500, detail="Upload succeeded but file_id is missing.")
     
     # Step 2: Classify
-    classification_result = await classify_file_by_id(file_id)
+    classification_result = await classify_file_by_id(
+        file_id,
+        sql_mode=normalized_sql_mode or None,
+        table_name=normalized_table_name or None,
+    )
     
     if not classification_result.get("success"):
         return {
@@ -670,6 +705,11 @@ async def upload_classify_and_process(
     
     # Step 3: Route to appropriate pipeline
     routed_to = classification_result.get("routed_to")
+
+    # Manual SQL mode for structured files must be honored end-to-end.
+    if is_structured_upload and normalized_sql_mode in ("otl", "inc"):
+        routed_to = "sql_otl" if normalized_sql_mode == "otl" else "sql_inc"
+        classification_result["routed_to"] = routed_to
     
     if routed_to == "vector_pipeline":
         # Unstructured -> Vector pipeline
@@ -692,7 +732,12 @@ async def upload_classify_and_process(
     
     elif routed_to in ("sql_otl", "sql_inc"):
         # Structured -> SQL pipeline (SQL pipeline API)
-        sql_result = await process_sql_pipeline(file_id)
+        manual_sql_with_table = bool(normalized_table_name) and normalized_sql_mode in ("otl", "inc")
+        sql_result = await process_sql_pipeline(
+            file_id,
+            preferred_table_name=normalized_table_name if manual_sql_with_table else None,
+            skip_llm_table_name=manual_sql_with_table,
+        )
         
         return {
             "success": sql_result.success,
