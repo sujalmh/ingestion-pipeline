@@ -55,6 +55,7 @@ async def upload_to_sql_pipeline(
     file_path: str,
     table_name: Optional[str] = None,
     skip_llm_table_name: bool = False,
+    sql_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Upload a file to SQL Ingestion API.
@@ -72,6 +73,8 @@ async def upload_to_sql_pipeline(
         form_data["table_name"] = table_name
         if skip_llm_table_name:
             form_data["skip_llm_table_name"] = "true"
+    if sql_mode in ("otl", "inc"):
+        form_data["sql_mode"] = sql_mode
 
     async with httpx.AsyncClient(timeout=settings.SQL_UPLOAD_TIMEOUT) as client:
         with open(file_path, "rb") as f:
@@ -122,6 +125,7 @@ async def process_sql_pipeline(
     file_id: str,
     preferred_table_name: Optional[str] = None,
     skip_llm_table_name: bool = False,
+    preferred_sql_mode: Optional[str] = None,
 ) -> SQLPipelineResult:
     """
     Upload a file to SQL Ingestion API for processing.
@@ -170,6 +174,7 @@ async def process_sql_pipeline(
                 file_path,
                 table_name=preferred_table_name,
                 skip_llm_table_name=skip_llm_table_name,
+                sql_mode=preferred_sql_mode,
             )
         except httpx.TimeoutException as e:
             await update_inbound_status(

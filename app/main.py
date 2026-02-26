@@ -737,6 +737,7 @@ async def upload_classify_and_process(
             file_id,
             preferred_table_name=normalized_table_name if manual_sql_with_table else None,
             skip_llm_table_name=manual_sql_with_table,
+            preferred_sql_mode=normalized_sql_mode or None,
         )
         
         return {
