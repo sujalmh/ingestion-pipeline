@@ -616,10 +616,8 @@ async def check_operational_metadata_exists(table_name: str) -> Optional[int]:
 
 async def exists_completed_sql_load_for_table(table_name: str) -> bool:
     """
-    Return True if there is at least one completed SQL load for this table
-    or a "parent" table name (e.g. existing amfi_monthly_sample matches
-    current amfi_monthly_sample_jan2026). Used to route first load as OTL,
-    subsequent loads as INC.
+    Return True if there is at least one completed SQL load for this exact
+    table name. Used to route first load as OTL, subsequent loads as INC.
     Status 'done' is set by sql_adapter when the SQL pipeline reports
     completed/incremental_load_completed.
     """
@@ -633,7 +631,7 @@ async def exists_completed_sql_load_for_table(table_name: str) -> bool:
                 JOIN operational_metadata o ON m.operational_metadata_id = o.id
                 WHERE m.routed_to IN ('sql_otl', 'sql_inc')
                   AND m.status IN ('completed', 'incremental_load_completed', 'done')
-                  AND (o.table_name = $1 OR $1 LIKE o.table_name || '_%')
+                  AND o.table_name = $1
             );
             """,
             table_name,
