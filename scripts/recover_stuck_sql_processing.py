@@ -10,6 +10,9 @@ Usage:
     python scripts/recover_stuck_sql_processing.py --apply
   python scripts/recover_stuck_sql_processing.py --mark-missing-done
   python scripts/recover_stuck_sql_processing.py --mark-missing-failed
+    python scripts/recover_stuck_sql_processing.py --apply --reingest-missing \
+            --source "SEBI" --source-url "https://www.sebi.gov.in" \
+            --released-on "2026-03-17" --updated-on "2026-03-17"
 
 Required env vars:
   DATABASE_URL
@@ -72,6 +75,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Mark rows as failed when SQL job is missing (404 from SQL API).",
     )
+    parser.add_argument(
+        "--reingest-missing",
+        action="store_true",
+        help="For missing SQL jobs (404), re-upload file, approve with shared metadata, and sync to completion.",
+    )
+    parser.add_argument("--source", type=str, default="", help="Shared source for reingest approval.")
+    parser.add_argument("--source-url", type=str, default="", help="Shared source URL for reingest approval.")
+    parser.add_argument("--released-on", type=str, default="", help="Shared released_on date for reingest approval (YYYY-MM-DD).")
+    parser.add_argument("--updated-on", type=str, default="", help="Shared updated_on date for reingest approval (YYYY-MM-DD).")
+    parser.add_argument("--business-metadata", type=str, default="", help="Optional shared business metadata JSON/string for reingest approval.")
+    parser.add_argument("--poll-attempts", type=int, default=24, help="Polling attempts after reingest approval.")
+    parser.add_argument("--poll-interval", type=int, default=5, help="Polling interval seconds after reingest approval.")
     return parser.parse_args()
 
 
@@ -179,6 +194,71 @@ def _print_remaining(remaining: List[Dict]) -> None:
             )
 
 
+async def _reingest_and_complete(
+    file_id: str,
+    filename: str,
+    sql_api_url: str,
+    source: str,
+    source_url: str,
+    released_on: str,
+    updated_on: str,
+    business_metadata: str,
+    poll_attempts: int,
+    poll_interval: int,
+) -> Tuple[str, str]:
+    """
+    Re-upload missing job file, approve it, then sync completion.
+
+    Returns:
+        (outcome, message)
+        outcome in {'done', 'failed', 'pending'}
+    """
+    from app.services.sql_adapter import process_sql_pipeline, check_sql_job_completion
+
+    upload_result = await process_sql_pipeline(file_id)
+    if not upload_result.success or not upload_result.sql_job_id:
+        return "failed", f"reingest upload failed: {upload_result.error or 'no job id'}"
+
+    new_job_id = upload_result.sql_job_id
+
+    form_data = {
+        "source": source,
+        "source_url": source_url,
+        "released_on": released_on,
+        "updated_on": updated_on,
+    }
+    if business_metadata.strip():
+        form_data["business_metadata"] = business_metadata
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        approve_resp = await client.post(
+            f"{sql_api_url.rstrip('/')}/approve/{new_job_id}",
+            data=form_data,
+        )
+
+        if approve_resp.status_code != 200:
+            # Sync once in case SQL API already moved ahead.
+            await check_sql_job_completion(file_id)
+            return "failed", f"approval failed http={approve_resp.status_code} body={approve_resp.text[:200]}"
+
+        final_status = "approved"
+        for _ in range(max(1, poll_attempts)):
+            await asyncio.sleep(max(1, poll_interval))
+            status_resp = await client.get(f"{sql_api_url.rstrip('/')}/status/{new_job_id}")
+            if status_resp.status_code == 200:
+                final_status = (status_resp.json() or {}).get("status", final_status)
+                if final_status in TERMINAL_SUCCESS.union(TERMINAL_FAILURE):
+                    break
+
+    await check_sql_job_completion(file_id)
+
+    if final_status in TERMINAL_SUCCESS:
+        return "done", f"reingest completed (new_job_id={new_job_id}, status={final_status})"
+    if final_status in TERMINAL_FAILURE:
+        return "failed", f"reingest terminal failure (new_job_id={new_job_id}, status={final_status})"
+    return "pending", f"reingest still pending (new_job_id={new_job_id}, status={final_status})"
+
+
 async def main() -> None:
     args = parse_args()
 
@@ -188,6 +268,16 @@ async def main() -> None:
 
     if args.mark_missing_done and args.mark_missing_failed:
         raise SystemExit("Use only one of --mark-missing-done or --mark-missing-failed")
+
+    if args.reingest_missing and (args.mark_missing_done or args.mark_missing_failed):
+        raise SystemExit("--reingest-missing cannot be combined with --mark-missing-done/--mark-missing-failed")
+
+    if args.reingest_missing:
+        required = [args.source.strip(), args.source_url.strip(), args.released_on.strip(), args.updated_on.strip()]
+        if not all(required):
+            raise SystemExit("--reingest-missing requires --source, --source-url, --released-on, --updated-on")
+        if dry_run:
+            print("[INFO] dry-run enabled: reingest actions will be planned but not executed.")
 
     database_url = (
         getattr(app_settings, "DATABASE_URL", "") if app_settings else os.getenv("DATABASE_URL", "")
@@ -285,7 +375,66 @@ async def main() -> None:
 
                 if status_code == 404:
                     missing_count += 1
-                    if args.mark_missing_done:
+                    if args.reingest_missing:
+                        if dry_run:
+                            pending_count += 1
+                            print(
+                                f"[DRY-REINGEST] {filename} ({file_id}) old_job={job_id} "
+                                f"source={args.source} source_url={args.source_url}"
+                            )
+                            remaining_items.append(
+                                {
+                                    "file_id": file_id,
+                                    "filename": filename,
+                                    "job_id": job_id,
+                                    "sql_status": "would_reingest_missing_job",
+                                    "has_source": bool(args.source.strip()),
+                                    "has_source_url": bool(args.source_url.strip()),
+                                    "has_released_on": bool(args.released_on.strip()),
+                                    "has_updated_on": bool(args.updated_on.strip()),
+                                    "has_business_metadata": bool(args.business_metadata.strip()),
+                                    "source_identifier": row.get("source_identifier"),
+                                    "inbound_source_url": row.get("source_url"),
+                                }
+                            )
+                        else:
+                            outcome, msg = await _reingest_and_complete(
+                                file_id=file_id,
+                                filename=filename,
+                                sql_api_url=sql_api_url,
+                                source=args.source.strip(),
+                                source_url=args.source_url.strip(),
+                                released_on=args.released_on.strip(),
+                                updated_on=args.updated_on.strip(),
+                                business_metadata=args.business_metadata,
+                                poll_attempts=args.poll_attempts,
+                                poll_interval=args.poll_interval,
+                            )
+                            if outcome == "done":
+                                done_count += 1
+                                print(f"[REINGEST-DONE] {filename} ({file_id}) old_job={job_id} {msg}")
+                            elif outcome == "failed":
+                                failed_count += 1
+                                print(f"[REINGEST-FAIL] {filename} ({file_id}) old_job={job_id} {msg}")
+                            else:
+                                pending_count += 1
+                                print(f"[REINGEST-PEND] {filename} ({file_id}) old_job={job_id} {msg}")
+                                remaining_items.append(
+                                    {
+                                        "file_id": file_id,
+                                        "filename": filename,
+                                        "job_id": job_id,
+                                        "sql_status": "reingested_pending",
+                                        "has_source": bool(args.source.strip()),
+                                        "has_source_url": bool(args.source_url.strip()),
+                                        "has_released_on": bool(args.released_on.strip()),
+                                        "has_updated_on": bool(args.updated_on.strip()),
+                                        "has_business_metadata": bool(args.business_metadata.strip()),
+                                        "source_identifier": row.get("source_identifier"),
+                                        "inbound_source_url": row.get("source_url"),
+                                    }
+                                )
+                    elif args.mark_missing_done:
                         if not dry_run:
                             await mark_done(conn, file_id)
                         done_count += 1
