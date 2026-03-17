@@ -24,7 +24,7 @@ import argparse
 import asyncio
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -100,7 +100,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def fetch_processing_rows(conn: asyncpg.Connection, for_date: str) -> List[asyncpg.Record]:
+async def fetch_processing_rows(conn: asyncpg.Connection, for_date: date) -> List[asyncpg.Record]:
     return await conn.fetch(
         """
         SELECT CAST(id AS TEXT) AS id,
@@ -273,7 +273,13 @@ async def _reingest_and_complete(
 
 async def main() -> None:
     args = parse_args()
-    processing_date = args.for_date.strip() if args.for_date else date.today().isoformat()
+    if args.for_date:
+        try:
+            processing_date = datetime.strptime(args.for_date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            raise SystemExit("Invalid --for-date. Use YYYY-MM-DD.")
+    else:
+        processing_date = date.today()
 
     dry_run = args.dry_run and not args.apply
     if args.dry_run and args.apply:
@@ -315,10 +321,10 @@ async def main() -> None:
     try:
         rows = await fetch_processing_rows(conn, processing_date)
         if not rows:
-            print(f"No SQL processing rows found for date {processing_date}.")
+            print(f"No SQL processing rows found for date {processing_date.isoformat()}.")
             return
 
-        print(f"Found {len(rows)} SQL rows in processing for date {processing_date}.")
+        print(f"Found {len(rows)} SQL rows in processing for date {processing_date.isoformat()}.")
 
         done_count = 0
         failed_count = 0
