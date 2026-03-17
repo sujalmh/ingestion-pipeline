@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import os
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -90,26 +91,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--business-metadata", type=str, default="", help="Optional shared business metadata JSON/string for reingest approval.")
     parser.add_argument("--poll-attempts", type=int, default=24, help="Polling attempts after reingest approval.")
     parser.add_argument("--poll-interval", type=int, default=5, help="Polling interval seconds after reingest approval.")
+    parser.add_argument(
+        "--for-date",
+        type=str,
+        default=None,
+        help="Only process records created on this date (YYYY-MM-DD). Default is today.",
+    )
     return parser.parse_args()
 
 
-async def fetch_processing_rows(conn: asyncpg.Connection) -> List[asyncpg.Record]:
+async def fetch_processing_rows(conn: asyncpg.Connection, for_date: str) -> List[asyncpg.Record]:
     return await conn.fetch(
         """
         SELECT CAST(id AS TEXT) AS id,
                original_filename,
                status,
-                             error_message,
-                             source_type,
-                             source_identifier,
-                             source_url,
-                             operational_metadata_id
+               error_message,
+               source_type,
+               source_identifier,
+               source_url,
+               operational_metadata_id
         FROM inbound_files_metadata
         WHERE status = 'processing'
           AND routed_to LIKE 'sql_%'
           AND error_message LIKE 'sql_job_id:%'
+          AND created_at::date = $1::date
         ORDER BY created_at DESC
-        """
+        """,
+        for_date,
     )
 
 
@@ -264,6 +273,7 @@ async def _reingest_and_complete(
 
 async def main() -> None:
     args = parse_args()
+    processing_date = args.for_date.strip() if args.for_date else date.today().isoformat()
 
     dry_run = args.dry_run and not args.apply
     if args.dry_run and args.apply:
@@ -303,12 +313,12 @@ async def main() -> None:
 
     conn = await asyncpg.connect(database_url)
     try:
-        rows = await fetch_processing_rows(conn)
+        rows = await fetch_processing_rows(conn, processing_date)
         if not rows:
-            print("No SQL processing rows found.")
+            print(f"No SQL processing rows found for date {processing_date}.")
             return
 
-        print(f"Found {len(rows)} SQL rows in processing.")
+        print(f"Found {len(rows)} SQL rows in processing for date {processing_date}.")
 
         done_count = 0
         failed_count = 0
