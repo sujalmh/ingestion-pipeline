@@ -1,18 +1,19 @@
 """
 Recover stuck SQL files in inbound_files_metadata.
 
-Use this when files are stuck in `processing` after approval/batch-approval.
-The script checks SQL pipeline job status and syncs records to terminal states.
+Use this when files are stuck in `processing` after approval/batch-approval,
+OR to retry files that previously ended up in `failed` state (e.g. due to
+a busy SQL server).
 
 Usage:
-  python scripts/recover_stuck_sql_processing.py
-    python scripts/recover_stuck_sql_processing.py --dry-run
-    python scripts/recover_stuck_sql_processing.py --apply
-  python scripts/recover_stuck_sql_processing.py --mark-missing-done
-  python scripts/recover_stuck_sql_processing.py --mark-missing-failed
-    python scripts/recover_stuck_sql_processing.py --apply --reingest-missing \
-            --source "SEBI" --source-url "https://www.sebi.gov.in" \
-            --released-on "2026-03-17" --updated-on "2026-03-17"
+  python scripts/recover_stuck_sql_processing.py --dry-run
+  python scripts/recover_stuck_sql_processing.py --apply
+  python scripts/recover_stuck_sql_processing.py --apply --reingest-missing \
+          --source "SEBI" --source-url "https://www.sebi.gov.in" \
+          --released-on "2026-03-17" --updated-on "2026-03-17"
+  python scripts/recover_stuck_sql_processing.py --apply --retry-failed \
+          --source "SEBI" --source-url "https://www.sebi.gov.in" \
+          --released-on "2026-03-17" --updated-on "2026-03-17"
 
 Required env vars:
   DATABASE_URL
@@ -97,6 +98,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Only process records created on this date (YYYY-MM-DD). Default is today.",
     )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help=(
+            "Retry files whose status is 'failed' (not 'processing'). "
+            "Resets them to processing, re-uploads, approves, and polls to completion. "
+            "Requires --source, --source-url, --released-on, --updated-on."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -119,6 +129,44 @@ async def fetch_processing_rows(conn: asyncpg.Connection, for_date: date) -> Lis
         ORDER BY created_at DESC
         """,
         for_date,
+    )
+
+
+async def fetch_failed_rows(conn: asyncpg.Connection, for_date: date) -> List[asyncpg.Record]:
+    """Fetch rows in 'failed' state that still have a sql_job_id error message."""
+    return await conn.fetch(
+        """
+        SELECT CAST(id AS TEXT) AS id,
+               original_filename,
+               status,
+               error_message,
+               source_type,
+               source_identifier,
+               source_url,
+               operational_metadata_id
+        FROM inbound_files_metadata
+        WHERE status = 'failed'
+          AND routed_to LIKE 'sql_%'
+          AND (error_message LIKE 'sql_job_id:%' OR error_message LIKE 'SQL job %')
+          AND created_at::date = $1::date
+        ORDER BY created_at DESC
+        """,
+        for_date,
+    )
+
+
+async def reset_to_processing(conn: asyncpg.Connection, file_id: str, job_id: str) -> None:
+    """Reset a failed row back to processing so reingest logic can proceed."""
+    await conn.execute(
+        """
+        UPDATE inbound_files_metadata
+        SET status = 'processing',
+            error_message = $2,
+            processing_completed_at = NULL
+        WHERE id = $1::uuid
+        """,
+        file_id,
+        f"sql_job_id:{job_id}",
     )
 
 
@@ -271,6 +319,108 @@ async def _reingest_and_complete(
     return "pending", f"reingest still pending (new_job_id={new_job_id}, status={final_status})"
 
 
+async def _run_retry_failed(
+    conn: asyncpg.Connection,
+    args: argparse.Namespace,
+    processing_date: date,
+    sql_api_url: str,
+    dry_run: bool,
+) -> None:
+    """Re-ingest all rows currently in 'failed' state for the given date."""
+    rows = await fetch_failed_rows(conn, processing_date)
+    if not rows:
+        print(f"No failed SQL rows found for date {processing_date.isoformat()}.")
+        return
+
+    print(f"Found {len(rows)} failed SQL rows for date {processing_date.isoformat()}.")
+
+    done_count = 0
+    failed_count = 0
+    pending_count = 0
+    remaining_items: List[Dict] = []
+
+    for row in rows:
+        file_id = row["id"]
+        filename = row["original_filename"]
+        err = row["error_message"] or ""
+        # Extract whatever job id is present (best-effort)
+        if err.startswith("sql_job_id:"):
+            job_id = err.replace("sql_job_id:", "", 1)
+        elif err.startswith("SQL job "):
+            # e.g. "SQL job failed" — no old job id available
+            job_id = "unknown"
+        else:
+            job_id = err[:60] or "unknown"
+
+        if dry_run:
+            pending_count += 1
+            print(f"[DRY-RETRY] {filename} ({file_id}) old_job={job_id}")
+            remaining_items.append(
+                {
+                    "file_id": file_id,
+                    "filename": filename,
+                    "job_id": job_id,
+                    "sql_status": "would_retry_failed",
+                    "has_source": bool(args.source.strip()),
+                    "has_source_url": bool(args.source_url.strip()),
+                    "has_released_on": bool(args.released_on.strip()),
+                    "has_updated_on": bool(args.updated_on.strip()),
+                    "has_business_metadata": bool(args.business_metadata.strip()),
+                    "source_identifier": row.get("source_identifier"),
+                    "inbound_source_url": row.get("source_url"),
+                }
+            )
+            continue
+
+        # Reset to processing so check_sql_job_completion can update it later.
+        await reset_to_processing(conn, file_id, job_id)
+
+        outcome, msg = await _reingest_and_complete(
+            file_id=file_id,
+            filename=filename,
+            sql_api_url=sql_api_url,
+            source=args.source.strip(),
+            source_url=args.source_url.strip(),
+            released_on=args.released_on.strip(),
+            updated_on=args.updated_on.strip(),
+            business_metadata=args.business_metadata,
+            poll_attempts=args.poll_attempts,
+            poll_interval=args.poll_interval,
+        )
+        if outcome == "done":
+            done_count += 1
+            print(f"[RETRY-DONE] {filename} ({file_id}) old_job={job_id} {msg}")
+        elif outcome == "failed":
+            failed_count += 1
+            print(f"[RETRY-FAIL] {filename} ({file_id}) old_job={job_id} {msg}")
+        else:
+            pending_count += 1
+            print(f"[RETRY-PEND] {filename} ({file_id}) old_job={job_id} {msg}")
+            remaining_items.append(
+                {
+                    "file_id": file_id,
+                    "filename": filename,
+                    "job_id": job_id,
+                    "sql_status": "retry_pending",
+                    "has_source": bool(args.source.strip()),
+                    "has_source_url": bool(args.source_url.strip()),
+                    "has_released_on": bool(args.released_on.strip()),
+                    "has_updated_on": bool(args.updated_on.strip()),
+                    "has_business_metadata": bool(args.business_metadata.strip()),
+                    "source_identifier": row.get("source_identifier"),
+                    "inbound_source_url": row.get("source_url"),
+                }
+            )
+
+    print("\nSummary (retry-failed)")
+    print(f"  mode:    {'dry-run' if dry_run else 'apply'}")
+    print(f"  done:    {done_count}")
+    print(f"  failed:  {failed_count}")
+    print(f"  pending: {pending_count}")
+
+    _print_remaining(remaining_items)
+
+
 async def main() -> None:
     args = parse_args()
     if args.for_date:
@@ -298,6 +448,13 @@ async def main() -> None:
         if dry_run:
             print("[INFO] dry-run enabled: reingest actions will be planned but not executed.")
 
+    if args.retry_failed:
+        required = [args.source.strip(), args.source_url.strip(), args.released_on.strip(), args.updated_on.strip()]
+        if not all(required):
+            raise SystemExit("--retry-failed requires --source, --source-url, --released-on, --updated-on")
+        if dry_run:
+            print("[INFO] dry-run enabled: retry-failed actions will be planned but not executed.")
+
     database_url = (
         getattr(app_settings, "DATABASE_URL", "") if app_settings else os.getenv("DATABASE_URL", "")
     )
@@ -311,14 +468,25 @@ async def main() -> None:
         raise SystemExit("DATABASE_URL is required")
 
     app_db_pool_started = False
-    if args.reingest_missing:
+    if args.reingest_missing or args.retry_failed:
         if connect_db is None or disconnect_db is None:
-            raise SystemExit("App DB helpers unavailable; cannot run --reingest-missing in standalone mode")
+            raise SystemExit("App DB helpers unavailable; cannot run --reingest-missing/--retry-failed in standalone mode")
         await connect_db()
         app_db_pool_started = True
 
     conn = await asyncpg.connect(database_url)
     try:
+        # ── Retry-failed mode runs against 'failed' rows, not 'processing' ──
+        if args.retry_failed:
+            await _run_retry_failed(
+                conn=conn,
+                args=args,
+                processing_date=processing_date,
+                sql_api_url=sql_api_url,
+                dry_run=dry_run,
+            )
+            return
+
         rows = await fetch_processing_rows(conn, processing_date)
         if not rows:
             print(f"No SQL processing rows found for date {processing_date.isoformat()}.")
