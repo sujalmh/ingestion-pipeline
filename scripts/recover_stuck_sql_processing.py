@@ -38,8 +38,11 @@ if str(PROJECT_ROOT) not in sys.path:
 try:
     # Preferred: reuse application settings (already loads .env)
     from app.config.settings import settings as app_settings
+    from app.models.db import connect_db, disconnect_db
 except Exception:
     app_settings = None
+    connect_db = None
+    disconnect_db = None
     # Fallback: load .env directly so this script can run standalone.
     try:
         from dotenv import load_dotenv
@@ -291,6 +294,13 @@ async def main() -> None:
     if not database_url:
         raise SystemExit("DATABASE_URL is required")
 
+    app_db_pool_started = False
+    if args.reingest_missing:
+        if connect_db is None or disconnect_db is None:
+            raise SystemExit("App DB helpers unavailable; cannot run --reingest-missing in standalone mode")
+        await connect_db()
+        app_db_pool_started = True
+
     conn = await asyncpg.connect(database_url)
     try:
         rows = await fetch_processing_rows(conn)
@@ -499,6 +509,8 @@ async def main() -> None:
 
     finally:
         await conn.close()
+        if app_db_pool_started:
+            await disconnect_db()
 
 
 if __name__ == "__main__":
