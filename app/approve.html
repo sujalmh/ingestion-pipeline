@@ -89,6 +89,18 @@
   .loading { text-align:center; padding:60px; color:var(--text2); }
   .spinner { display:inline-block; width:18px; height:18px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; margin-right:8px; vertical-align:middle; }
   @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* Batch Approval */
+  .btn-batch { background:var(--accent); color:#fff; border:none; padding:8px 18px; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; margin-left:10px; }
+  .btn-batch:hover { opacity:.85; }
+  .btn-batch:disabled { opacity:.5; cursor:not-allowed; }
+  .batch-panel { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:24px; margin-bottom:24px; }
+  .batch-panel h2 { font-size:16px; margin-bottom:6px; }
+  .batch-panel .subtitle { color:var(--text2); font-size:13px; margin-bottom:18px; }
+  .batch-summary-table { width:100%; border-collapse:collapse; font-size:12px; margin-bottom:18px; }
+  .batch-summary-table th { background:var(--bg); padding:6px 10px; text-align:left; color:var(--text2); text-transform:uppercase; font-size:11px; }
+  .batch-summary-table td { padding:6px 10px; border-bottom:1px solid var(--border); }
+  .batch-actions { display:flex; gap:10px; margin-top:16px; }
 </style>
 </head>
 <body>
@@ -99,10 +111,33 @@
     <div class="meta" id="statusLine">Loading pending jobs...</div>
   </div>
   <div class="nav">
+    <button class="btn-batch" id="batchToggleBtn" onclick="toggleBatchPanel()" style="display:none;">⚡ Batch Approve All</button>
     <a href="/upload">Upload</a>
     <a href="/dashboard">Dashboard</a>
     <a href="/approve" style="border-color:var(--accent);">Approval Queue</a>
     <a href="/hitl-review">HITL Review</a>
+  </div>
+</div>
+
+<div id="batchPanel" style="display:none; max-width:1100px; margin:0 auto; padding:24px 32px 0 32px;">
+  <div class="batch-panel">
+    <h2>⚡ Batch Approve All Pending Jobs</h2>
+    <p class="subtitle">Enter shared metadata once — it will be applied to every pending job.</p>
+    <table class="batch-summary-table" id="batchSummaryTable"><thead><tr>
+      <th>File</th><th>Table</th><th>Type</th><th>Rows</th><th>Status</th>
+    </tr></thead><tbody id="batchSummaryBody"></tbody></table>
+    <div class="form-grid">
+      <div class="form-group"><label>Source *</label><input type="text" id="batch-source" placeholder="e.g. RBI, Ministry of Commerce"></div>
+      <div class="form-group"><label>Source URL *</label><input type="text" id="batch-source-url" placeholder="https://..."></div>
+      <div class="form-group"><label>Released On *</label><input type="date" id="batch-released-on"></div>
+      <div class="form-group"><label>Updated On *</label><input type="date" id="batch-updated-on"></div>
+      <div class="form-group full"><label>Business Metadata <span class="hint">(optional)</span></label><input type="text" id="batch-biz-meta" placeholder="Context for this batch..."></div>
+    </div>
+    <div class="batch-actions">
+      <button class="btn btn-approve" id="batchApproveBtn" onclick="batchApproveAll()">Approve All</button>
+      <button class="btn btn-reject" onclick="toggleBatchPanel()">Cancel</button>
+    </div>
+    <div id="batchResult"></div>
   </div>
 </div>
 
@@ -370,12 +405,19 @@ async function loadPending() {
     const resp = await fetch('/approve/pending');
     const data = await resp.json();
     const files = data.files || [];
+    _pendingFiles = files;
 
     const awaiting = files.filter(f => f.sql_job_status === 'awaiting_approval');
-    const others = files.filter(f => f.sql_job_status !== 'awaiting_approval');
+    const schemaMismatch = files.filter(f => f.sql_job_status === 'schema_mismatch');
+    const others = files.filter(f => f.sql_job_status !== 'awaiting_approval' && f.sql_job_status !== 'schema_mismatch');
+    const approvableCount = awaiting.length + schemaMismatch.length;
 
     document.getElementById('statusLine').textContent =
-      `${awaiting.length} awaiting approval, ${others.length} other SQL jobs in processing`;
+      `${approvableCount} awaiting approval, ${others.length} other SQL jobs in processing`;
+
+    // Show batch button when 1+ approvable jobs
+    const batchBtn = document.getElementById('batchToggleBtn');
+    batchBtn.style.display = approvableCount > 0 ? '' : 'none';
 
     if (files.length === 0) {
       document.getElementById('content').innerHTML = `<div class="empty-state">
@@ -394,6 +436,102 @@ async function loadPending() {
   } catch (e) {
     document.getElementById('content').innerHTML =
       `<div class="empty-state"><h2>Error loading data</h2><p>${esc(e.message)}</p></div>`;
+  }
+}
+
+let _pendingFiles = [];
+
+function toggleBatchPanel() {
+  const panel = document.getElementById('batchPanel');
+  const visible = panel.style.display !== 'none';
+  panel.style.display = visible ? 'none' : 'block';
+  if (!visible) populateBatchSummary();
+}
+
+function populateBatchSummary() {
+  const tbody = document.getElementById('batchSummaryBody');
+  tbody.innerHTML = '';
+  const approvable = _pendingFiles.filter(f =>
+    f.sql_job_status === 'awaiting_approval' || f.sql_job_status === 'schema_mismatch'
+  );
+  if (approvable.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text2)">No approvable jobs</td></tr>';
+    document.getElementById('batchApproveBtn').disabled = true;
+    return;
+  }
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('batch-released-on').value = today;
+  document.getElementById('batch-updated-on').value = today;
+  document.getElementById('batchApproveBtn').disabled = false;
+  approvable.forEach(f => {
+    const isIL = !!f.incremental_load_preview || f.sql_job_status === 'schema_mismatch';
+    const tbl = isIL
+      ? (f.incremental_load_preview?.matched_table?.table_name || '-')
+      : (f.preview?.proposed_table_name || '-');
+    const rows = isIL
+      ? (f.incremental_load_preview?.new_rows_count ?? '-')
+      : (f.preview?.total_rows ?? '-');
+    const type = isIL ? 'IL' : 'OTL';
+    const typeBadge = isIL
+      ? '<span class="badge" style="background:rgba(248,113,113,.12);color:var(--orange)">IL</span>'
+      : '<span class="badge" style="background:rgba(52,211,153,.12);color:var(--green)">OTL</span>';
+    tbody.innerHTML += `<tr>
+      <td>${esc(f.original_filename)}</td>
+      <td>${esc(tbl)}</td>
+      <td>${typeBadge}</td>
+      <td>${rows}</td>
+      <td>${esc(f.sql_job_status)}</td>
+    </tr>`;
+  });
+}
+
+async function batchApproveAll() {
+  const source = document.getElementById('batch-source').value.trim();
+  const sourceUrl = document.getElementById('batch-source-url').value.trim();
+  const releasedOn = document.getElementById('batch-released-on').value;
+  const updatedOn = document.getElementById('batch-updated-on').value;
+  const bizMeta = document.getElementById('batch-biz-meta').value.trim();
+  const resultDiv = document.getElementById('batchResult');
+
+  if (!source || !sourceUrl || !releasedOn || !updatedOn) {
+    resultDiv.innerHTML = '<div class="result-banner error">Please fill in all required fields.</div>';
+    return;
+  }
+
+  const btn = document.getElementById('batchApproveBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Approving...';
+  resultDiv.innerHTML = '';
+
+  const formData = new FormData();
+  formData.append('source', source);
+  formData.append('source_url', sourceUrl);
+  formData.append('released_on', releasedOn + 'T00:00:00');
+  formData.append('updated_on', updatedOn + 'T00:00:00');
+  if (bizMeta) formData.append('business_metadata', bizMeta);
+
+  try {
+    const resp = await fetch('/approve/batch-approve-sql', { method: 'POST', body: formData });
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      resultDiv.innerHTML = `<div class="result-banner error">Batch approval failed: ${esc(data.detail || 'Unknown error')}</div>`;
+      btn.innerHTML = 'Approve All'; btn.disabled = false;
+      return;
+    }
+
+    const approved = data.approved || [];
+    const errors = data.errors || [];
+    let msg = `${approved.length} job(s) approved.`;
+    if (errors.length > 0) msg += ` ${errors.length} skipped.`;
+    resultDiv.innerHTML = `<div class="result-banner success">${esc(msg)}</div>`;
+    btn.innerHTML = 'Approve All';
+
+    // Reload after short delay
+    setTimeout(() => { location.reload(); }, 2000);
+  } catch (e) {
+    resultDiv.innerHTML = `<div class="result-banner error">Network error: ${esc(e.message)}</div>`;
+    btn.innerHTML = 'Approve All'; btn.disabled = false;
   }
 }
 

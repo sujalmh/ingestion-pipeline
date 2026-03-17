@@ -1440,6 +1440,99 @@ async def proxy_reject_sql(file_id: str):
     }
 
 
+@app.post("/approve/batch-approve-sql", tags=["Dashboard"])
+async def batch_approve_sql(
+    source: str = Form(...),
+    source_url: str = Form(...),
+    released_on: str = Form(...),
+    updated_on: str = Form(...),
+    business_metadata: Optional[str] = Form(default=None),
+):
+    """
+    Batch-approve all pending SQL jobs with shared metadata.
+
+    Forwards to the SQL pipeline API's /batch-approve endpoint, then
+    syncs completion status for each approved job back to our DB.
+    """
+    from app.services.sql_adapter import check_sql_job_completion
+    import asyncio, asyncpg
+
+    form_data = {
+        "source": source,
+        "source_url": source_url,
+        "released_on": released_on,
+        "updated_on": updated_on,
+    }
+    if business_metadata:
+        form_data["business_metadata"] = business_metadata
+
+    # Forward to SQL pipeline API
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        resp = await client.post(
+            f"{settings.SQL_PIPELINE_API_URL}/batch-approve",
+            data=form_data,
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"SQL pipeline batch-approve returned {resp.status_code}: {resp.text}",
+        )
+
+    batch_result = resp.json()
+    approved_jobs = batch_result.get("approved", [])
+
+    # Sync each approved job's completion status back to our DB
+    if approved_jobs:
+        conn = await asyncpg.connect(settings.DATABASE_URL)
+        try:
+            for job_info in approved_jobs:
+                sql_job_id = job_info.get("job_id")
+                if not sql_job_id:
+                    continue
+                # Find the inbound file that owns this sql_job_id
+                row = await conn.fetchrow(
+                    """SELECT CAST(id AS TEXT) AS id FROM inbound_files_metadata
+                       WHERE error_message = $1 LIMIT 1""",
+                    f"sql_job_id:{sql_job_id}",
+                )
+                if row:
+                    file_id = row["id"]
+                    # Background: poll for completion then sync
+                    asyncio.create_task(_sync_batch_job(file_id, sql_job_id))
+        finally:
+            await conn.close()
+
+    return batch_result
+
+
+async def _sync_batch_job(file_id: str, sql_job_id: str):
+    """Poll SQL API for a batch-approved job and sync status to our DB."""
+    import asyncio
+    from app.services.sql_adapter import check_sql_job_completion
+
+    TERMINAL = ("completed", "incremental_load_completed", "failed")
+    for _ in range(12):
+        await asyncio.sleep(5)
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"{settings.SQL_PIPELINE_API_URL}/status/{sql_job_id}"
+                )
+            if resp.status_code == 200:
+                status = resp.json().get("status")
+                if status in TERMINAL:
+                    await check_sql_job_completion(file_id)
+                    return
+        except Exception as e:
+            logger.warning(f"Batch sync poll error for {sql_job_id}: {e}")
+    # Final sync attempt
+    try:
+        await check_sql_job_completion(file_id)
+    except Exception:
+        pass
+
+
 # ==========================================
 # HITL Classification Review Page + Endpoints
 # ==========================================
