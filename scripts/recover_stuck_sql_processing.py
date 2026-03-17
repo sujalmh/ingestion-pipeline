@@ -20,10 +20,30 @@ Optional env vars:
 import argparse
 import asyncio
 import os
+import sys
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import asyncpg
 import httpx
+
+# Ensure project root is importable when script is run from any directory.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    # Preferred: reuse application settings (already loads .env)
+    from app.config.settings import settings as app_settings
+except Exception:
+    app_settings = None
+    # Fallback: load .env directly so this script can run standalone.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(dotenv_path=PROJECT_ROOT / ".env")
+    except Exception:
+        pass
 
 
 TERMINAL_SUCCESS = {"completed", "incremental_load_completed"}
@@ -169,8 +189,14 @@ async def main() -> None:
     if args.mark_missing_done and args.mark_missing_failed:
         raise SystemExit("Use only one of --mark-missing-done or --mark-missing-failed")
 
-    database_url = os.getenv("DATABASE_URL")
-    sql_api_url = os.getenv("SQL_PIPELINE_API_URL", "http://localhost:8000")
+    database_url = (
+        getattr(app_settings, "DATABASE_URL", "") if app_settings else os.getenv("DATABASE_URL", "")
+    )
+    sql_api_url = (
+        getattr(app_settings, "SQL_PIPELINE_API_URL", "http://localhost:8000")
+        if app_settings
+        else os.getenv("SQL_PIPELINE_API_URL", "http://localhost:8000")
+    )
 
     if not database_url:
         raise SystemExit("DATABASE_URL is required")
