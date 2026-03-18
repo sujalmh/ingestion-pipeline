@@ -1467,19 +1467,41 @@ async def batch_approve_sql(
         form_data["business_metadata"] = business_metadata
 
     # Forward to SQL pipeline API
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-        resp = await client.post(
-            f"{settings.SQL_PIPELINE_API_URL}/batch-approve",
-            data=form_data,
-        )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+            resp = await client.post(
+                f"{settings.SQL_PIPELINE_API_URL}/batch-approve",
+                data=form_data,
+            )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "SQL pipeline batch-approve timed out after 60 seconds. "
+                "The SQL pipeline may still have accepted the request. "
+                "Run: python scripts/recover_stuck_sql_processing.py --apply --approve-individual "
+                "--source '...' --source-url '...' --released-on '...' --updated-on '...'"
+            ),
+        ) from exc
+    except httpx.TransportError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cannot reach SQL pipeline API: {exc}",
+        ) from exc
 
     if resp.status_code != 200:
         raise HTTPException(
             status_code=resp.status_code,
-            detail=f"SQL pipeline batch-approve returned {resp.status_code}: {resp.text}",
+            detail=f"SQL pipeline batch-approve returned {resp.status_code}: {resp.text[:500]}",
         )
 
-    batch_result = resp.json()
+    try:
+        batch_result = resp.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"SQL pipeline batch-approve returned non-JSON response: {resp.text[:300]}",
+        ) from exc
     approved_jobs = batch_result.get("approved", [])
 
     # Sync each approved job's completion status back to our DB

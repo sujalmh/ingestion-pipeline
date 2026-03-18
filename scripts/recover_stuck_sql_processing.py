@@ -8,12 +8,22 @@ a busy SQL server).
 Usage:
   python scripts/recover_stuck_sql_processing.py --dry-run
   python scripts/recover_stuck_sql_processing.py --apply
+    python scripts/recover_stuck_sql_processing.py --apply --all-dates
   python scripts/recover_stuck_sql_processing.py --apply --reingest-missing \
           --source "SEBI" --source-url "https://www.sebi.gov.in" \
           --released-on "2026-03-17" --updated-on "2026-03-17"
   python scripts/recover_stuck_sql_processing.py --apply --retry-failed \
           --source "SEBI" --source-url "https://www.sebi.gov.in" \
           --released-on "2026-03-17" --updated-on "2026-03-17"
+  python scripts/recover_stuck_sql_processing.py --dry-run --retry-sql-upload-errors
+  python scripts/recover_stuck_sql_processing.py --apply --retry-sql-upload-errors
+  python scripts/recover_stuck_sql_processing.py --apply --retry-sql-upload-errors --all-dates
+  python scripts/recover_stuck_sql_processing.py --dry-run --approve-individual \
+          --source "SEBI" --source-url "https://www.sebi.gov.in" \
+          --released-on "2026-03-18" --updated-on "2026-03-18"
+  python scripts/recover_stuck_sql_processing.py --apply --approve-individual \
+          --source "SEBI" --source-url "https://www.sebi.gov.in" \
+          --released-on "2026-03-18" --updated-on "2026-03-18" --all-dates
 
 Required env vars:
   DATABASE_URL
@@ -27,7 +37,7 @@ import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import asyncpg
 import httpx
@@ -99,11 +109,34 @@ def parse_args() -> argparse.Namespace:
         help="Only process records created on this date (YYYY-MM-DD). Default is today.",
     )
     parser.add_argument(
+        "--all-dates",
+        action="store_true",
+        help="Process matching SQL rows across all dates instead of only one date.",
+    )
+    parser.add_argument(
         "--retry-failed",
         action="store_true",
         help=(
             "Retry files whose status is 'failed' (not 'processing'). "
             "Resets them to processing, re-uploads, approves, and polls to completion. "
+            "Requires --source, --source-url, --released-on, --updated-on."
+        ),
+    )
+    parser.add_argument(
+        "--retry-sql-upload-errors",
+        action="store_true",
+        help=(
+            "Re-upload files that failed at the SQL API upload step "
+            "(error_message contains 'SQL API error:', 'SQL Ingestion Pipeline timeout', etc.). "
+            "No approval metadata needed — after upload succeeds the file awaits approval normally."
+        ),
+    )
+    parser.add_argument(
+        "--approve-individual",
+        action="store_true",
+        help=(
+            "Individually approve files that are in 'processing' state and whose SQL job "
+            "is still at 'awaiting_approval' (e.g. after a batch-approve failure). "
             "Requires --source, --source-url, --released-on, --updated-on."
         ),
     )
@@ -117,9 +150,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def fetch_processing_rows(conn: asyncpg.Connection, for_date: date) -> List[asyncpg.Record]:
-    return await conn.fetch(
-        """
+async def fetch_processing_rows(conn: asyncpg.Connection, for_date: Optional[date]) -> List[asyncpg.Record]:
+    query = """
         SELECT CAST(id AS TEXT) AS id,
                original_filename,
                status,
@@ -132,17 +164,18 @@ async def fetch_processing_rows(conn: asyncpg.Connection, for_date: date) -> Lis
         WHERE status = 'processing'
           AND routed_to LIKE 'sql_%'
           AND error_message LIKE 'sql_job_id:%'
-          AND created_at::date = $1::date
-        ORDER BY created_at DESC
-        """,
-        for_date,
-    )
+    """
+    params = []
+    if for_date is not None:
+        query += "\n          AND created_at::date = $1::date"
+        params.append(for_date)
+    query += "\n        ORDER BY created_at DESC"
+    return await conn.fetch(query, *params)
 
 
-async def fetch_failed_rows(conn: asyncpg.Connection, for_date: date) -> List[asyncpg.Record]:
+async def fetch_failed_rows(conn: asyncpg.Connection, for_date: Optional[date]) -> List[asyncpg.Record]:
     """Fetch rows in 'failed' state that still have a sql_job_id error message."""
-    return await conn.fetch(
-        """
+    query = """
         SELECT CAST(id AS TEXT) AS id,
                original_filename,
                status,
@@ -155,11 +188,42 @@ async def fetch_failed_rows(conn: asyncpg.Connection, for_date: date) -> List[as
         WHERE status = 'failed'
           AND routed_to LIKE 'sql_%'
           AND (error_message LIKE 'sql_job_id:%' OR error_message LIKE 'SQL job %')
-          AND created_at::date = $1::date
-        ORDER BY created_at DESC
-        """,
-        for_date,
-    )
+    """
+    params = []
+    if for_date is not None:
+        query += "\n          AND created_at::date = $1::date"
+        params.append(for_date)
+    query += "\n        ORDER BY created_at DESC"
+    return await conn.fetch(query, *params)
+
+
+async def fetch_sql_upload_error_rows(conn: asyncpg.Connection, for_date: Optional[date]) -> List[asyncpg.Record]:
+    """Fetch rows in 'failed' state where the SQL API upload itself errored (no job id created)."""
+    query = """
+        SELECT CAST(id AS TEXT) AS id,
+               original_filename,
+               status,
+               error_message,
+               source_type,
+               source_identifier,
+               source_url,
+               operational_metadata_id
+        FROM inbound_files_metadata
+        WHERE status = 'failed'
+          AND routed_to LIKE 'sql_%'
+          AND (
+               error_message LIKE 'SQL API error: %'
+            OR error_message LIKE 'SQL Ingestion Pipeline timeout%'
+            OR error_message LIKE 'SQL upload failed: %'
+            OR error_message LIKE 'SQL pipeline error: %'
+          )
+    """
+    params = []
+    if for_date is not None:
+        query += "\n          AND created_at::date = $1::date"
+        params.append(for_date)
+    query += "\n        ORDER BY created_at DESC"
+    return await conn.fetch(query, *params)
 
 
 async def reset_to_processing(conn: asyncpg.Connection, file_id: str, job_id: str) -> None:
@@ -428,15 +492,270 @@ async def _run_retry_failed(
     _print_remaining(remaining_items)
 
 
+async def _run_retry_sql_upload_errors(
+    conn: asyncpg.Connection,
+    args: argparse.Namespace,
+    processing_date: Optional[date],
+    date_label: str,
+    dry_run: bool,
+) -> None:
+    """Re-upload SQL files that failed at the upload step (no job_id was ever created)."""
+    from app.services.sql_adapter import process_sql_pipeline
+
+    rows = await fetch_sql_upload_error_rows(conn, processing_date)
+    if args.exclude_pattern:
+        original_count = len(rows)
+        rows = [
+            r for r in rows
+            if not any(pat.lower() in (r["original_filename"] or "").lower() for pat in args.exclude_pattern)
+        ]
+        skipped = original_count - len(rows)
+        if skipped:
+            print(f"Excluded {skipped} file(s) matching --exclude-pattern {args.exclude_pattern}.")
+
+    if not rows:
+        print(f"No SQL upload-error rows found for {date_label}.")
+        return
+
+    print(f"Found {len(rows)} SQL upload-error rows for {date_label}.")
+
+    success_count = 0
+    failed_count = 0
+    remaining_items: List[Dict] = []
+
+    for row in rows:
+        file_id = row["id"]
+        filename = row["original_filename"]
+        old_error = row["error_message"] or ""
+
+        if dry_run:
+            print(f"[DRY-UPLOAD-RETRY] {filename} ({file_id}) old_error={old_error!r}")
+            remaining_items.append(
+                {
+                    "file_id": file_id,
+                    "filename": filename,
+                    "job_id": "n/a",
+                    "sql_status": "would_retry_upload",
+                    "has_source": False,
+                    "has_source_url": False,
+                    "has_released_on": False,
+                    "has_updated_on": False,
+                    "has_business_metadata": False,
+                    "source_identifier": row.get("source_identifier"),
+                    "inbound_source_url": row.get("source_url"),
+                }
+            )
+            continue
+
+        result = await process_sql_pipeline(file_id)
+        if result.success:
+            success_count += 1
+            print(
+                f"[UPLOAD-OK] {filename} ({file_id}) new_job_id={result.sql_job_id} "
+                f"sql_status={result.sql_status}"
+            )
+        else:
+            failed_count += 1
+            print(f"[UPLOAD-FAIL] {filename} ({file_id}) error={result.error!r}")
+            remaining_items.append(
+                {
+                    "file_id": file_id,
+                    "filename": filename,
+                    "job_id": "n/a",
+                    "sql_status": f"upload_failed: {result.error}",
+                    "has_source": False,
+                    "has_source_url": False,
+                    "has_released_on": False,
+                    "has_updated_on": False,
+                    "has_business_metadata": False,
+                    "source_identifier": row.get("source_identifier"),
+                    "inbound_source_url": row.get("source_url"),
+                }
+            )
+
+    print("\nSummary (retry-sql-upload-errors)")
+    print(f"  mode:    {'dry-run' if dry_run else 'apply'}")
+    print(f"  uploaded:  {success_count}  (now in processing, awaiting approval)")
+    print(f"  still_failed: {failed_count}")
+    if dry_run:
+        print(f"  would_retry: {len(rows)}")
+
+    _print_remaining(remaining_items)
+
+
+async def _run_approve_individual(
+    conn: asyncpg.Connection,
+    args: argparse.Namespace,
+    processing_date: Optional[date],
+    date_label: str,
+    sql_api_url: str,
+    dry_run: bool,
+) -> None:
+    """
+    Individually approve files whose SQL job is still at 'awaiting_approval'.
+    Use this to recover after a batch-approve failure.
+    """
+    rows = await fetch_processing_rows(conn, processing_date)
+    if args.exclude_pattern:
+        original_count = len(rows)
+        rows = [
+            r for r in rows
+            if not any(pat.lower() in (r["original_filename"] or "").lower() for pat in args.exclude_pattern)
+        ]
+        skipped = original_count - len(rows)
+        if skipped:
+            print(f"Excluded {skipped} file(s) matching --exclude-pattern {args.exclude_pattern}.")
+
+    if not rows:
+        print(f"No SQL processing rows found for {date_label}.")
+        return
+
+    print(f"Found {len(rows)} SQL processing rows for {date_label}. Checking SQL API status...")
+
+    approved_count = 0
+    skipped_count = 0
+    failed_count = 0
+    remaining_items: List[Dict] = []
+
+    form_data = {
+        "source": args.source.strip(),
+        "source_url": args.source_url.strip(),
+        "released_on": args.released_on.strip(),
+        "updated_on": args.updated_on.strip(),
+    }
+    if args.business_metadata.strip():
+        form_data["business_metadata"] = args.business_metadata.strip()
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        for row in rows:
+            file_id = row["id"]
+            filename = row["original_filename"]
+            err = row["error_message"] or ""
+            job_id = err.replace("sql_job_id:", "", 1)
+
+            # Check current SQL status
+            try:
+                status_code, payload = await get_sql_status(client, sql_api_url, job_id)
+            except Exception as ex:
+                print(f"[WARN] {filename} ({file_id}) job={job_id}: SQL API unreachable: {ex}")
+                skipped_count += 1
+                continue
+
+            if status_code != 200:
+                print(f"[SKIP] {filename} ({file_id}) job={job_id} http={status_code} (not approving)")
+                skipped_count += 1
+                continue
+
+            sql_status = payload.get("status", "")
+
+            # Already terminal — just sync
+            if sql_status in TERMINAL_SUCCESS:
+                if not dry_run:
+                    await mark_done(conn, file_id)
+                approved_count += 1
+                prefix = "[DRY-SYNC-DONE]" if dry_run else "[SYNC-DONE]"
+                print(f"{prefix} {filename} ({file_id}) job={job_id} already={sql_status}")
+                continue
+
+            if sql_status in TERMINAL_FAILURE:
+                if not dry_run:
+                    await mark_failed(conn, file_id, f"SQL job {sql_status}")
+                failed_count += 1
+                prefix = "[DRY-SYNC-FAIL]" if dry_run else "[SYNC-FAIL]"
+                print(f"{prefix} {filename} ({file_id}) job={job_id} already={sql_status}")
+                continue
+
+            if sql_status != "awaiting_approval":
+                print(f"[SKIP] {filename} ({file_id}) job={job_id} sql_status={sql_status} (not awaiting approval)")
+                skipped_count += 1
+                remaining_items.append({
+                    "file_id": file_id, "filename": filename, "job_id": job_id,
+                    "sql_status": sql_status, "has_source": False, "has_source_url": False,
+                    "has_released_on": False, "has_updated_on": False, "has_business_metadata": False,
+                    "source_identifier": row.get("source_identifier"),
+                    "inbound_source_url": row.get("source_url"),
+                })
+                continue
+
+            # Approve this job
+            if dry_run:
+                print(f"[DRY-APPROVE] {filename} ({file_id}) job={job_id}")
+                skipped_count += 1
+                remaining_items.append({
+                    "file_id": file_id, "filename": filename, "job_id": job_id,
+                    "sql_status": "would_approve", "has_source": bool(args.source.strip()),
+                    "has_source_url": bool(args.source_url.strip()),
+                    "has_released_on": bool(args.released_on.strip()),
+                    "has_updated_on": bool(args.updated_on.strip()),
+                    "has_business_metadata": bool(args.business_metadata.strip()),
+                    "source_identifier": row.get("source_identifier"),
+                    "inbound_source_url": row.get("source_url"),
+                })
+                continue
+
+            approve_resp = await client.post(
+                f"{sql_api_url.rstrip('/')}/approve/{job_id}",
+                data=form_data,
+            )
+            if approve_resp.status_code != 200:
+                failed_count += 1
+                print(f"[APPROVE-FAIL] {filename} ({file_id}) job={job_id} http={approve_resp.status_code} {approve_resp.text[:200]}")
+                remaining_items.append({
+                    "file_id": file_id, "filename": filename, "job_id": job_id,
+                    "sql_status": f"approve_http_{approve_resp.status_code}", "has_source": False,
+                    "has_source_url": False, "has_released_on": False, "has_updated_on": False,
+                    "has_business_metadata": False, "source_identifier": row.get("source_identifier"),
+                    "inbound_source_url": row.get("source_url"),
+                })
+                continue
+
+            approved_count += 1
+            print(f"[APPROVED] {filename} ({file_id}) job={job_id} — polling for completion...")
+
+            # Poll for completion
+            final_status = "approved"
+            for _ in range(max(1, args.poll_attempts)):
+                await asyncio.sleep(max(1, args.poll_interval))
+                try:
+                    st_resp = await client.get(f"{sql_api_url.rstrip('/')}/status/{job_id}")
+                    if st_resp.status_code == 200:
+                        final_status = (st_resp.json() or {}).get("status", final_status)
+                        if final_status in TERMINAL_SUCCESS.union(TERMINAL_FAILURE):
+                            break
+                except Exception:
+                    break
+
+            # Sync to our DB
+            from app.services.sql_adapter import check_sql_job_completion
+            await check_sql_job_completion(file_id)
+            print(f"  -> synced (final_sql_status={final_status})")
+
+    print("\nSummary (approve-individual)")
+    print(f"  mode:     {'dry-run' if dry_run else 'apply'}")
+    print(f"  approved: {approved_count}")
+    print(f"  failed:   {failed_count}")
+    print(f"  skipped:  {skipped_count}")
+
+    _print_remaining(remaining_items)
+
+
 async def main() -> None:
     args = parse_args()
-    if args.for_date:
+    if args.for_date and args.all_dates:
+        raise SystemExit("Use either --for-date or --all-dates, not both")
+
+    if args.all_dates:
+        processing_date = None
+        date_label = "all dates"
+    elif args.for_date:
         try:
             processing_date = datetime.strptime(args.for_date.strip(), "%Y-%m-%d").date()
         except ValueError:
             raise SystemExit("Invalid --for-date. Use YYYY-MM-DD.")
+        date_label = processing_date.isoformat()
     else:
         processing_date = date.today()
+        date_label = processing_date.isoformat()
 
     dry_run = args.dry_run and not args.apply
     if args.dry_run and args.apply:
@@ -462,6 +781,16 @@ async def main() -> None:
         if dry_run:
             print("[INFO] dry-run enabled: retry-failed actions will be planned but not executed.")
 
+    if args.retry_sql_upload_errors and dry_run:
+        print("[INFO] dry-run enabled: upload-retry actions will be planned but not executed.")
+
+    if args.approve_individual:
+        required = [args.source.strip(), args.source_url.strip(), args.released_on.strip(), args.updated_on.strip()]
+        if not all(required):
+            raise SystemExit("--approve-individual requires --source, --source-url, --released-on, --updated-on")
+        if dry_run:
+            print("[INFO] dry-run enabled: individual-approve actions will be planned but not executed.")
+
     database_url = (
         getattr(app_settings, "DATABASE_URL", "") if app_settings else os.getenv("DATABASE_URL", "")
     )
@@ -475,14 +804,37 @@ async def main() -> None:
         raise SystemExit("DATABASE_URL is required")
 
     app_db_pool_started = False
-    if args.reingest_missing or args.retry_failed:
+    if args.reingest_missing or args.retry_failed or args.retry_sql_upload_errors or args.approve_individual:
         if connect_db is None or disconnect_db is None:
-            raise SystemExit("App DB helpers unavailable; cannot run --reingest-missing/--retry-failed in standalone mode")
+            raise SystemExit("App DB helpers unavailable; cannot run this mode in standalone")
         await connect_db()
         app_db_pool_started = True
 
     conn = await asyncpg.connect(database_url)
     try:
+        # ── Retry SQL upload errors: re-upload files that never got a job_id ──
+        if args.retry_sql_upload_errors:
+            await _run_retry_sql_upload_errors(
+                conn=conn,
+                args=args,
+                processing_date=processing_date,
+                date_label=date_label,
+                dry_run=dry_run,
+            )
+            return
+
+        # ── Approve individual: approve awaiting_approval jobs one-by-one ──
+        if args.approve_individual:
+            await _run_approve_individual(
+                conn=conn,
+                args=args,
+                processing_date=processing_date,
+                date_label=date_label,
+                sql_api_url=sql_api_url,
+                dry_run=dry_run,
+            )
+            return
+
         # ── Retry-failed mode runs against 'failed' rows, not 'processing' ──
         if args.retry_failed:
             await _run_retry_failed(
@@ -496,7 +848,7 @@ async def main() -> None:
 
         rows = await fetch_processing_rows(conn, processing_date)
         if not rows:
-            print(f"No SQL processing rows found for date {processing_date.isoformat()}.")
+            print(f"No SQL processing rows found for {date_label}.")
             return
 
         # Apply --exclude-pattern filters
@@ -513,7 +865,7 @@ async def main() -> None:
                 print("No rows remaining after exclusion filter.")
                 return
 
-        print(f"Found {len(rows)} SQL rows in processing for date {processing_date.isoformat()}.")
+        print(f"Found {len(rows)} SQL rows in processing for {date_label}.")
 
         done_count = 0
         failed_count = 0

@@ -514,10 +514,18 @@ async function batchApproveAll() {
 
   try {
     const resp = await fetch('/approve/batch-approve-sql', { method: 'POST', body: formData });
-    const data = await resp.json();
+    const rawText = await resp.text();
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (_) {
+      resultDiv.innerHTML = `<div class="result-banner error">Batch approval failed (status ${resp.status}): server returned a non-JSON response.<br><pre style="font-size:11px;white-space:pre-wrap">${esc(rawText.slice(0, 400))}</pre></div>`;
+      btn.innerHTML = 'Approve All'; btn.disabled = false;
+      return;
+    }
 
     if (!resp.ok) {
-      resultDiv.innerHTML = `<div class="result-banner error">Batch approval failed: ${esc(data.detail || 'Unknown error')}</div>`;
+      resultDiv.innerHTML = `<div class="result-banner error">Batch approval failed (${resp.status}): ${esc(data.detail || JSON.stringify(data))}</div>`;
       btn.innerHTML = 'Approve All'; btn.disabled = false;
       return;
     }
