@@ -107,6 +107,13 @@ def parse_args() -> argparse.Namespace:
             "Requires --source, --source-url, --released-on, --updated-on."
         ),
     )
+    parser.add_argument(
+        "--exclude-pattern",
+        type=str,
+        action="append",
+        default=[],
+        help="Skip files whose name contains this substring (case-insensitive). Can be repeated.",
+    )
     return parser.parse_args()
 
 
@@ -491,6 +498,20 @@ async def main() -> None:
         if not rows:
             print(f"No SQL processing rows found for date {processing_date.isoformat()}.")
             return
+
+        # Apply --exclude-pattern filters
+        if args.exclude_pattern:
+            original_count = len(rows)
+            rows = [
+                r for r in rows
+                if not any(pat.lower() in (r["original_filename"] or "").lower() for pat in args.exclude_pattern)
+            ]
+            skipped = original_count - len(rows)
+            if skipped:
+                print(f"Excluded {skipped} file(s) matching --exclude-pattern {args.exclude_pattern}.")
+            if not rows:
+                print("No rows remaining after exclusion filter.")
+                return
 
         print(f"Found {len(rows)} SQL rows in processing for date {processing_date.isoformat()}.")
 
