@@ -155,7 +155,7 @@ function renderCard(f, idx) {
   const preview = f.preview;
   const ilPreview = f.incremental_load_preview;
   const jobId = f.sql_job_id;
-  const isIncrementalPipeline = !!ilPreview || sqlJobStatus === 'schema_mismatch' || sqlJobStatus === 'incremental_load_completed';
+  const isIncrementalPipeline = !!ilPreview || sqlJobStatus === 'schema_mismatch' || sqlJobStatus === 'duplicate_data_detected' || sqlJobStatus === 'incremental_load_completed';
 
   let badgeCls = 'badge-awaiting';
   let cardCls = '';
@@ -231,7 +231,7 @@ function renderCard(f, idx) {
 
   // Approval form for awaiting_approval (OTL) or schema_mismatch (incremental load)
   let formHtml = '';
-  if (sqlJobStatus === 'awaiting_approval' || (sqlJobStatus === 'schema_mismatch' && ilPreview)) {
+  if (sqlJobStatus === 'awaiting_approval' || ((sqlJobStatus === 'schema_mismatch' || sqlJobStatus === 'duplicate_data_detected') && ilPreview)) {
     formHtml = `<div class="approval-form" id="form-${idx}">
       <h3>Approve with Metadata</h3>
       <div class="form-grid">
@@ -409,8 +409,10 @@ async function loadPending() {
 
     const awaiting = files.filter(f => f.sql_job_status === 'awaiting_approval');
     const schemaMismatch = files.filter(f => f.sql_job_status === 'schema_mismatch');
-    const others = files.filter(f => f.sql_job_status !== 'awaiting_approval' && f.sql_job_status !== 'schema_mismatch');
-    const approvableCount = awaiting.length + schemaMismatch.length;
+    const duplicates = files.filter(f => f.sql_job_status === 'duplicate_data_detected');
+    const approvableStatuses = new Set(['awaiting_approval', 'schema_mismatch', 'duplicate_data_detected']);
+    const others = files.filter(f => !approvableStatuses.has(f.sql_job_status));
+    const approvableCount = awaiting.length + schemaMismatch.length + duplicates.length;
 
     document.getElementById('statusLine').textContent =
       `${approvableCount} awaiting approval, ${others.length} other SQL jobs in processing`;
@@ -428,9 +430,9 @@ async function loadPending() {
       return;
     }
 
-    // Render awaiting first, then others
+    // Render approvable first, then others
     let html = '';
-    const sorted = [...awaiting, ...others];
+    const sorted = [...awaiting, ...schemaMismatch, ...duplicates, ...others];
     sorted.forEach((f, i) => { html += renderCard(f, i); });
     document.getElementById('content').innerHTML = html;
   } catch (e) {
@@ -452,7 +454,7 @@ function populateBatchSummary() {
   const tbody = document.getElementById('batchSummaryBody');
   tbody.innerHTML = '';
   const approvable = _pendingFiles.filter(f =>
-    f.sql_job_status === 'awaiting_approval' || f.sql_job_status === 'schema_mismatch'
+    f.sql_job_status === 'awaiting_approval' || f.sql_job_status === 'schema_mismatch' || f.sql_job_status === 'duplicate_data_detected'
   );
   if (approvable.length === 0) {
     tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text2)">No approvable jobs</td></tr>';
