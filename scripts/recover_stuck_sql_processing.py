@@ -147,6 +147,21 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Skip files whose name contains this substring (case-insensitive). Can be repeated.",
     )
+    parser.add_argument(
+        "--backfill-milvus",
+        action="store_true",
+        help=(
+            "Backfill Milvus vector signatures for existing PostgreSQL tables "
+            "that predate the Milvus integration.  Calls the SQL pipeline API "
+            "endpoint /admin/backfill-milvus.  Combine with --dry-run to preview."
+        ),
+    )
+    parser.add_argument(
+        "--milvus-tables",
+        type=str,
+        default=None,
+        help="Comma-separated table names for --backfill-milvus (default: all public tables).",
+    )
     return parser.parse_args()
 
 
@@ -739,6 +754,49 @@ async def _run_approve_individual(
     _print_remaining(remaining_items)
 
 
+async def _run_backfill_milvus(
+    sql_api_url: str,
+    tables: Optional[str],
+    dry_run: bool,
+) -> None:
+    """Call /admin/backfill-milvus on the SQL pipeline API."""
+    url = f"{sql_api_url.rstrip('/')}/admin/backfill-milvus"
+    form: Dict[str, str] = {}
+    if tables:
+        form["tables"] = tables
+    if dry_run:
+        form["dry_run"] = "true"
+
+    print(f"Calling {url}  (dry_run={dry_run}, tables={'all' if not tables else tables})")
+    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+        try:
+            resp = await client.post(url, data=form)
+        except httpx.TimeoutException:
+            print("[ERROR] Request timed out — the backfill may still be running server-side.")
+            return
+        except httpx.TransportError as exc:
+            print(f"[ERROR] Could not reach SQL API: {exc}")
+            return
+
+    if resp.status_code != 200:
+        print(f"[ERROR] HTTP {resp.status_code}: {resp.text[:500]}")
+        return
+
+    data = resp.json()
+    print(f"  total_tables:   {data.get('total_tables')}")
+    print(f"  already_signed: {data.get('already_signed')}")
+    if dry_run:
+        would = data.get("would_create", 0)
+        print(f"  would_create:   {would}")
+        if data.get("tables"):
+            for tbl in data["tables"]:
+                print(f"    - {tbl}")
+    else:
+        print(f"  will_create:    {data.get('will_create')}")
+        print("  Backfill is running in the background on the SQL API server.")
+        print("  Check server logs for progress.")
+
+
 async def main() -> None:
     args = parse_args()
     if args.for_date and args.all_dates:
@@ -791,6 +849,9 @@ async def main() -> None:
         if dry_run:
             print("[INFO] dry-run enabled: individual-approve actions will be planned but not executed.")
 
+    if args.backfill_milvus and dry_run:
+        print("[INFO] dry-run enabled: will preview Milvus backfill without inserting.")
+
     database_url = (
         getattr(app_settings, "DATABASE_URL", "") if app_settings else os.getenv("DATABASE_URL", "")
     )
@@ -809,6 +870,15 @@ async def main() -> None:
             raise SystemExit("App DB helpers unavailable; cannot run this mode in standalone")
         await connect_db()
         app_db_pool_started = True
+
+    # ── Backfill Milvus (no DB connection needed — talks to SQL API) ──
+    if args.backfill_milvus:
+        await _run_backfill_milvus(
+            sql_api_url=sql_api_url,
+            tables=args.milvus_tables,
+            dry_run=dry_run,
+        )
+        return
 
     conn = await asyncpg.connect(database_url)
     try:
