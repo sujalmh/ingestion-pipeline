@@ -534,15 +534,62 @@ async def main() -> None:
                             f"updated_on={has_updated_on} business_metadata={has_business_metadata}"
                         )
                     elif sql_status in TERMINAL_FAILURE:
-                        if not dry_run:
-                            await mark_failed(conn, file_id, f"SQL job {sql_status}")
-                        failed_count += 1
-                        prefix = "[DRY-FAIL]" if dry_run else "[FAIL]"
-                        print(
-                            f"{prefix} {filename} ({file_id}) job={job_id} sql_status={sql_status} "
-                            f"source={has_source} source_url={has_source_url} released_on={has_released_on} "
-                            f"updated_on={has_updated_on} business_metadata={has_business_metadata}"
-                        )
+                        # When --reingest-missing is active, re-upload failed jobs
+                        # instead of just syncing the failure to our DB.
+                        if args.reingest_missing:
+                            if dry_run:
+                                pending_count += 1
+                                print(
+                                    f"[DRY-REINGEST-FAILED] {filename} ({file_id}) old_job={job_id} "
+                                    f"sql_status={sql_status} source={args.source} source_url={args.source_url}"
+                                )
+                                remaining_items.append(
+                                    {
+                                        "file_id": file_id,
+                                        "filename": filename,
+                                        "job_id": job_id,
+                                        "sql_status": "would_reingest_failed_job",
+                                        "has_source": bool(args.source.strip()),
+                                        "has_source_url": bool(args.source_url.strip()),
+                                        "has_released_on": bool(args.released_on.strip()),
+                                        "has_updated_on": bool(args.updated_on.strip()),
+                                        "has_business_metadata": bool(args.business_metadata.strip()),
+                                        "source_identifier": row.get("source_identifier"),
+                                        "inbound_source_url": row.get("source_url"),
+                                    }
+                                )
+                            else:
+                                outcome, msg = await _reingest_and_complete(
+                                    file_id=file_id,
+                                    filename=filename,
+                                    sql_api_url=sql_api_url,
+                                    source=args.source.strip(),
+                                    source_url=args.source_url.strip(),
+                                    released_on=args.released_on.strip(),
+                                    updated_on=args.updated_on.strip(),
+                                    business_metadata=args.business_metadata,
+                                    poll_attempts=args.poll_attempts,
+                                    poll_interval=args.poll_interval,
+                                )
+                                if outcome == "done":
+                                    done_count += 1
+                                    print(f"[REINGEST-DONE] {filename} ({file_id}) old_job={job_id} {msg}")
+                                elif outcome == "failed":
+                                    failed_count += 1
+                                    print(f"[REINGEST-FAIL] {filename} ({file_id}) old_job={job_id} {msg}")
+                                else:
+                                    pending_count += 1
+                                    print(f"[REINGEST-PEND] {filename} ({file_id}) old_job={job_id} {msg}")
+                        else:
+                            if not dry_run:
+                                await mark_failed(conn, file_id, f"SQL job {sql_status}")
+                            failed_count += 1
+                            prefix = "[DRY-FAIL]" if dry_run else "[FAIL]"
+                            print(
+                                f"{prefix} {filename} ({file_id}) job={job_id} sql_status={sql_status} "
+                                f"source={has_source} source_url={has_source_url} released_on={has_released_on} "
+                                f"updated_on={has_updated_on} business_metadata={has_business_metadata}"
+                            )
                     else:
                         pending_count += 1
                         print(
