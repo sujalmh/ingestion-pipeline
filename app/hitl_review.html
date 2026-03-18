@@ -28,6 +28,8 @@
         .btn-vector:hover { background: #3a56d4; }
         .btn-sql { background: #2ec4b6; color: white; }
         .btn-sql:hover { background: #25a99d; }
+        .btn-sql-inc { background: #0ea5a4; color: white; }
+        .btn-sql-inc:hover { background: #0b8b8a; }
         .btn-reject { background: #e63946; color: white; }
         .btn-reject:hover { background: #c5303c; }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -50,7 +52,7 @@
 
     <div class="info-box">
         These files had low classification confidence. Choose the correct pipeline for each:
-        <strong>Vector</strong> (unstructured text/documents) or <strong>SQL</strong> (tabular/structured data).
+        <strong>Vector</strong> (unstructured text/documents), <strong>SQL OTL</strong> (first load), or <strong>SQL INC</strong> (incremental load).
     </div>
 
     <div id="container">
@@ -95,7 +97,8 @@
                         </div>
                         <div class="actions" id="actions-${f.id}">
                             <button class="btn btn-vector" onclick="processFile('${f.id}', 'vector')">Send to Vector</button>
-                            <button class="btn btn-sql" onclick="processFile('${f.id}', 'sql')">Send to SQL</button>
+                            <button class="btn btn-sql" onclick="processFile('${f.id}', 'sql', 'otl')">Send to SQL OTL</button>
+                            <button class="btn btn-sql-inc" onclick="processFile('${f.id}', 'sql', 'inc')">Send to SQL INC</button>
                             <button class="btn btn-reject" onclick="rejectFile('${f.id}')">Reject</button>
                         </div>
                     </div>
@@ -110,7 +113,7 @@
             return (bytes / 1048576).toFixed(1) + ' MB';
         }
 
-        async function processFile(fileId, pipeline) {
+        async function processFile(fileId, pipeline, sqlMode = 'otl') {
             const actionsDiv = document.getElementById(`actions-${fileId}`);
             actionsDiv.querySelectorAll('button').forEach(b => b.disabled = true);
             actionsDiv.innerHTML += `<span class="status-msg processing">Processing...</span>`;
@@ -118,6 +121,7 @@
             try {
                 const formData = new FormData();
                 formData.append('pipeline', pipeline);
+                if (pipeline === 'sql') formData.append('sql_mode', sqlMode);
                 const resp = await fetch(`${API}/hitl-review/${fileId}/process`, {
                     method: 'POST',
                     body: formData
@@ -126,7 +130,10 @@
                 const msgEl = actionsDiv.querySelector('.status-msg');
                 if (data.success) {
                     msgEl.className = 'status-msg success';
-                    msgEl.textContent = `Done! Sent to ${pipeline} pipeline.`;
+                    const pipelineLabel = pipeline === 'sql'
+                        ? `SQL ${String(sqlMode || 'otl').toUpperCase()}`
+                        : 'vector';
+                    msgEl.textContent = `Done! Sent to ${pipelineLabel} pipeline.`;
                     document.getElementById(`card-${fileId}`).querySelector('.badge').textContent = 'Processed';
                     document.getElementById(`card-${fileId}`).querySelector('.badge').style.background = '#d4edda';
                     document.getElementById(`card-${fileId}`).querySelector('.badge').style.color = '#155724';

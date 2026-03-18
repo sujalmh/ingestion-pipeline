@@ -265,7 +265,13 @@ function statusBadge(s) {
 function routeBadge(r) {
   if (!r) return '-';
   const cls = r.startsWith('sql') ? 'badge-sql' : r === 'vector_pipeline' ? 'badge-vector' : 'badge-hitl';
-  return `<span class="badge ${cls}">${esc(r)}</span>`;
+  const label = {
+    sql_otl: 'SQL OTL',
+    sql_inc: 'SQL INC',
+    vector_pipeline: 'VECTOR',
+    hitl: 'HITL'
+  }[r] || r;
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
 }
 function esc(s) { if(!s) return ''; const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function fmtSize(b) { if(!b) return '-'; if(b<1024) return b+'B'; if(b<1048576) return (b/1024).toFixed(1)+'K'; return (b/1048576).toFixed(1)+'M'; }

@@ -1573,10 +1573,15 @@ async def get_hitl_review_pending():
 
 
 @app.post("/hitl-review/{file_id}/process", tags=["Dashboard"])
-async def hitl_review_process(file_id: str, pipeline: str = Form(...)):
+async def hitl_review_process(
+    file_id: str,
+    pipeline: str = Form(...),
+    sql_mode: str = Form("otl"),
+):
     """
     Process a HITL file through the chosen pipeline.
     pipeline: "vector" or "sql"
+    sql_mode: "otl" or "inc" when pipeline == "sql"
     """
     from app.services.vector_adapter import process_vector_pipeline
     from app.services.sql_adapter import process_sql_pipeline
@@ -1612,20 +1617,28 @@ async def hitl_review_process(file_id: str, pipeline: str = Form(...)):
             }
 
         elif pipeline == "sql":
-            # Update routing to SQL and process
+            normalized_sql_mode = (sql_mode or "otl").strip().lower()
+            if normalized_sql_mode not in ("otl", "inc"):
+                raise HTTPException(status_code=400, detail="Invalid sql_mode. Use 'otl' or 'inc'.")
+
+            routed_to = "sql_inc" if normalized_sql_mode == "inc" else "sql_otl"
+
+            # Update routing to the selected SQL mode and process
             await conn.execute(
                 """UPDATE inbound_files_metadata
-                   SET routed_to = 'sql_otl', status = 'classified'
+                   SET routed_to = $2, status = 'classified'
                    WHERE id = $1::uuid""",
                 file_id,
+                routed_to,
             )
             await conn.close()
             conn = None
 
-            result = await process_sql_pipeline(file_id)
+            result = await process_sql_pipeline(file_id, preferred_sql_mode=normalized_sql_mode)
             return {
                 "success": result.success,
                 "pipeline": "sql",
+                "sql_mode": normalized_sql_mode,
                 "sql_job_id": result.sql_job_id,
                 "sql_status": result.sql_status,
                 "error": result.error,
