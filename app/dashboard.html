@@ -91,6 +91,16 @@
 
   .loading { text-align:center; padding:60px; color:var(--text2); }
   .op-meta-section { margin-top:8px; }
+
+  .day-tables-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:8px 32px 0; }
+  @media (max-width:1100px) { .day-tables-row { grid-template-columns:1fr; } }
+  .day-tables-row .section { padding:0; }
+  .day-tables-row table { font-size:12px; }
+  .day-tables-row tbody td { padding:6px 10px; font-size:12px; }
+  .day-tables-row thead th { padding:8px 10px; font-size:11px; }
+  .day-total-row td { font-weight:700; background:rgba(108,140,255,.06); }
+  .show-more-btn { background:none; border:1px solid var(--border); color:var(--accent); padding:4px 14px; border-radius:5px; cursor:pointer; font-size:12px; margin-top:8px; display:inline-block; }
+  .show-more-btn:hover { background:var(--surface); }
 </style>
 </head>
 <body>
@@ -118,6 +128,52 @@
   <div class="stat-card"><div class="label">Vector Pipeline</div><div class="value" style="color:var(--cyan)" id="statVector">-</div></div>
   <div class="stat-card"><div class="label">SQL Pipeline</div><div class="value" style="color:var(--orange)" id="statSql">-</div></div>
   <div class="stat-card"><div class="label">HITL Queue</div><div class="value" style="color:var(--purple)" id="statHitl">-</div></div>
+</div>
+
+<div class="day-tables-row">
+  <div class="section">
+    <h2>Day-Level Summary</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Total</th>
+            <th>Structured</th>
+            <th>Unstructured</th>
+            <th>Done</th>
+            <th>Processing</th>
+            <th>Failed</th>
+            <th>HITL</th>
+          </tr>
+        </thead>
+        <tbody id="daySummaryBody">
+          <tr><td colspan="8" class="loading">Loading...</td></tr>
+        </tbody>
+      </table>
+      <div id="daySummaryMore"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Throughput Metrics</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Files Done</th>
+            <th>Data Ingested</th>
+            <th>Tables Loaded</th>
+          </tr>
+        </thead>
+        <tbody id="throughputBody">
+          <tr><td colspan="4" class="loading">Loading...</td></tr>
+        </tbody>
+      </table>
+      <div id="throughputMore"></div>
+    </div>
+  </div>
 </div>
 
 <div class="section">
@@ -441,6 +497,101 @@ function renderSqlMeta() {
   document.getElementById('sqlMetaBody').innerHTML = html;
 }
 
+function toDateKey(d) { if(!d) return null; const dt=new Date(d); if(isNaN(dt)) return null; return dt.toISOString().slice(0,10); }
+function fmtDateKey(k) { const d=new Date(k+'T00:00:00'); return d.toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}); }
+function fmtBytes(b) { if(!b||b<=0) return '-'; if(b<1048576) return (b/1024).toFixed(0)+' KB'; if(b<1073741824) return (b/1048576).toFixed(1)+' MB'; return (b/1073741824).toFixed(2)+' GB'; }
+
+let daySummaryLimit = 5;
+function renderDaySummary() {
+  const days = {};
+  allFiles.forEach(f => {
+    const key = toDateKey(f.created_at);
+    if (!key) return;
+    if (!days[key]) days[key] = { total:0, structured:0, unstructured:0, done:0, processing:0, failed:0, hitl:0 };
+    const d = days[key];
+    d.total++;
+    if (f.classification === 'structured') d.structured++;
+    else if (f.classification === 'unstructured') d.unstructured++;
+    if (f.status === 'done') d.done++;
+    else if (f.status === 'processing') d.processing++;
+    else if (f.status === 'failed') d.failed++;
+    else if (f.status === 'hitl') d.hitl++;
+  });
+
+  const keys = Object.keys(days).sort().reverse();
+  const el = document.getElementById('daySummaryBody');
+  const moreEl = document.getElementById('daySummaryMore');
+  if (keys.length === 0) { el.innerHTML = '<tr><td colspan="8" class="loading">No data</td></tr>'; moreEl.innerHTML = ''; return; }
+
+  const visible = keys.slice(0, daySummaryLimit);
+  let html = '';
+  visible.forEach(k => {
+    const d = days[k];
+    html += `<tr>
+      <td><strong>${fmtDateKey(k)}</strong></td>
+      <td>${d.total}</td>
+      <td>${d.structured||'-'}</td><td>${d.unstructured||'-'}</td>
+      <td style="color:var(--green)">${d.done||'-'}</td>
+      <td style="color:var(--yellow)">${d.processing||'-'}</td>
+      <td style="color:var(--red)">${d.failed||'-'}</td>
+      <td style="color:var(--purple)">${d.hitl||'-'}</td>
+    </tr>`;
+  });
+  el.innerHTML = html;
+
+  let btns = '';
+  if (daySummaryLimit < keys.length) btns += `<button class="show-more-btn" onclick="daySummaryLimit+=10;renderDaySummary()">Show more</button> `;
+  if (daySummaryLimit > 5) btns += `<button class="show-more-btn" onclick="daySummaryLimit=5;renderDaySummary()">Show less</button>`;
+  moreEl.innerHTML = btns;
+}
+
+let throughputLimit = 5;
+function renderThroughputMetrics() {
+  const days = {};
+  allFiles.forEach(f => {
+    if (f.status !== 'done') return;
+    const key = toDateKey(f.processing_completed_at || f.created_at);
+    if (!key) return;
+    if (!days[key]) days[key] = { files:0, bytes:0 };
+    const d = days[key];
+    d.files++;
+    d.bytes += Number(f.file_size) || 0;
+  });
+
+  const tableDays = {};
+  sqlMeta.forEach(s => {
+    const key = toDateKey(s.updated_on || s.released_on);
+    if (!key) return;
+    tableDays[key] = (tableDays[key] || 0) + 1;
+  });
+
+  const allKeys = new Set([...Object.keys(days), ...Object.keys(tableDays)]);
+  const keys = [...allKeys].sort().reverse();
+  const el = document.getElementById('throughputBody');
+  const moreEl = document.getElementById('throughputMore');
+  if (keys.length === 0) { el.innerHTML = '<tr><td colspan="4" class="loading">No data</td></tr>'; moreEl.innerHTML = ''; return; }
+
+  const visible = keys.slice(0, throughputLimit);
+
+  let html = '';
+  visible.forEach(k => {
+    const d = days[k] || { files:0, bytes:0 };
+    const tbl = tableDays[k] || 0;
+    html += `<tr>
+      <td><strong>${fmtDateKey(k)}</strong></td>
+      <td>${d.files||'-'}</td>
+      <td>${fmtBytes(d.bytes)}</td>
+      <td>${tbl||'-'}</td>
+    </tr>`;
+  });
+  el.innerHTML = html;
+
+  let tBtns = '';
+  if (throughputLimit < keys.length) tBtns += `<button class="show-more-btn" onclick="throughputLimit+=10;renderThroughputMetrics()">Show more</button> `;
+  if (throughputLimit > 5) tBtns += `<button class="show-more-btn" onclick="throughputLimit=5;renderThroughputMetrics()">Show less</button>`;
+  moreEl.innerHTML = tBtns;
+}
+
 async function loadData() {
   try {
     const resp = await fetch('/dashboard/data');
@@ -470,6 +621,8 @@ async function loadData() {
 
     document.getElementById('lastUpdated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
 
+    renderDaySummary();
+    renderThroughputMetrics();
     renderTable();
     renderOpMeta();
     renderSqlMeta();

@@ -15,6 +15,7 @@ API Endpoints:
 Workflow:
 Upload → Preprocessing → Awaiting Approval → [Human Approves via SQL Ingestion API] → Insert → Completed
 """
+from datetime import datetime
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 import httpx
@@ -380,6 +381,67 @@ async def check_sql_job_completion(file_id: str) -> Dict[str, Any]:
             "success": False,
             "error": str(e),
         }
+
+
+async def approve_sql_job(
+    job_id: str,
+    table_name: str,
+    source: str = "",
+    source_url: str = "",
+) -> Dict[str, Any]:
+    """
+    Approve a SQL pipeline job that is awaiting_approval.
+
+    Sends the required metadata so the SQL Ingestion API proceeds
+    with table creation and data insertion.
+
+    Args:
+        job_id: SQL Ingestion API job ID.
+        table_name: Target table name.
+        source: Data source name (e.g. "MoSPI").
+        source_url: Source URL.
+
+    Returns:
+        Dict with approval result.
+    """
+    url = f"{settings.SQL_PIPELINE_API_URL}/approve/{job_id}"
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    form_data = {
+        "table_name": table_name,
+        "source": source or "Data API Agent",
+        "source_url": source_url or "",
+        "released_on": today,
+        "updated_on": today,
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(float(settings.SQL_UPLOAD_TIMEOUT)),
+        ) as client:
+            response = await client.post(url, data=form_data)
+            response.raise_for_status()
+
+        data = response.json()
+        logger.info(
+            "SQL job %s approved: table=%s, status=%s",
+            job_id, data.get("table_name"), data.get("status"),
+        )
+        return {
+            "success": True,
+            "job_id": job_id,
+            "table_name": data.get("table_name"),
+            "status": data.get("status"),
+        }
+    except httpx.TimeoutException:
+        logger.warning("Timeout approving SQL job %s", job_id)
+        return {"success": False, "error": f"Approval timeout for job {job_id}"}
+    except httpx.HTTPStatusError as e:
+        logger.warning("HTTP error approving SQL job %s: %s", job_id, e)
+        return {"success": False, "error": f"HTTP {e.response.status_code}"}
+    except Exception as e:
+        logger.warning("Error approving SQL job %s: %s", job_id, e)
+        return {"success": False, "error": str(e)}
 
 
 async def handoff_to_sql(file_id: str) -> Dict[str, Any]:

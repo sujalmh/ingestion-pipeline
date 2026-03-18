@@ -850,22 +850,9 @@ async def init_source_registry_table():
                 schedule        VARCHAR(20) DEFAULT 'manual',
                 enabled         BOOLEAN DEFAULT true,
                 metadata        JSONB DEFAULT '{}',
-                period_config   JSONB,
-                last_fetched_period VARCHAR(50),
                 UNIQUE(source_id, api_id)
             );
         """)
-        # Migrate: add columns if table already exists without them
-        for col, col_def in [
-            ("period_config", "JSONB"),
-            ("last_fetched_period", "VARCHAR(50)"),
-        ]:
-            await conn.execute(f"""
-                DO $$ BEGIN
-                    ALTER TABLE source_api_endpoints ADD COLUMN {col} {col_def};
-                EXCEPTION WHEN duplicate_column THEN NULL;
-                END $$;
-            """)
         print("✅ source_registry + source_api_endpoints tables initialized.")
 
 
@@ -907,8 +894,8 @@ async def insert_source(source_data: Dict[str, Any]) -> str:
                     INSERT INTO source_api_endpoints
                         (source_id, api_id, name, endpoint, method,
                          description, output_format, params, headers,
-                         schedule, metadata, period_config)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12::jsonb);
+                         schedule, metadata)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb);
                     """,
                     source_data["source_id"],
                     api["api_id"],
@@ -921,7 +908,6 @@ async def insert_source(source_data: Dict[str, Any]) -> str:
                     json.dumps(api.get("headers") or {}),
                     api.get("schedule", "manual"),
                     json.dumps(api.get("metadata") or {}),
-                    json.dumps(api.get("period_config")) if api.get("period_config") else None,
                 )
 
     return source_data["source_id"]
@@ -1062,8 +1048,8 @@ async def add_api_endpoint(source_id: str, endpoint_data: Dict[str, Any]) -> int
             INSERT INTO source_api_endpoints
                 (source_id, api_id, name, endpoint, method,
                  description, output_format, params, headers,
-                 schedule, metadata, period_config)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12::jsonb)
+                 schedule, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb)
             RETURNING id;
             """,
             source_id,
@@ -1077,7 +1063,6 @@ async def add_api_endpoint(source_id: str, endpoint_data: Dict[str, Any]) -> int
             json.dumps(endpoint_data.get("headers") or {}),
             endpoint_data.get("schedule", "manual"),
             json.dumps(endpoint_data.get("metadata") or {}),
-            json.dumps(endpoint_data.get("period_config")) if endpoint_data.get("period_config") else None,
         )
         await conn.execute(
             "UPDATE source_registry SET updated_at = NOW() WHERE source_id = $1;",
@@ -1108,11 +1093,11 @@ async def update_api_endpoint(
                 set_clauses.append(f"{field} = ${param_count}")
                 params.append(updates[field])
 
-        for json_field in ["params", "headers", "metadata", "period_config"]:
+        for json_field in ["params", "headers", "metadata"]:
             if json_field in updates:
                 param_count += 1
                 set_clauses.append(f"{json_field} = ${param_count}::jsonb")
-                params.append(json.dumps(updates[json_field]) if updates[json_field] is not None else None)
+                params.append(json.dumps(updates[json_field]))
 
         if not set_clauses:
             return False
@@ -1172,89 +1157,3 @@ async def toggle_endpoint(source_id: str, api_id: str, enabled: bool) -> bool:
             enabled,
         )
         return result == "UPDATE 1"
-
-
-# ==========================================
-# Period Watermark Operations
-# ==========================================
-
-async def get_last_fetched_period(source_id: str, api_id: str) -> Optional[str]:
-    """
-    Get the last successfully fetched period for an API endpoint.
-
-    Checks DB-registered endpoints first. For YAML-only sources the watermark
-    is stored in a lightweight row that is upserted on first write.
-
-    Returns:
-        Period string (e.g. "2025-03") or None if never fetched.
-    """
-    pool = await get_db_pool()
-    async with pool.acquire() as conn:
-        val = await conn.fetchval(
-            """
-            SELECT last_fetched_period
-            FROM source_api_endpoints
-            WHERE source_id = $1 AND api_id = $2;
-            """,
-            source_id,
-            api_id,
-        )
-        return val
-
-
-async def update_last_fetched_period(
-    source_id: str, api_id: str, period_value: str
-) -> bool:
-    """
-    Update the watermark for an API endpoint after a successful period fetch.
-
-    If the endpoint row doesn't exist yet (YAML-only source), an upsert
-    creates a minimal row so the watermark is persisted.
-
-    Returns:
-        True if the update/insert succeeded.
-    """
-    pool = await get_db_pool()
-    async with pool.acquire() as conn:
-        # Try update first (covers DB-registered endpoints)
-        result = await conn.execute(
-            """
-            UPDATE source_api_endpoints
-            SET last_fetched_period = $3
-            WHERE source_id = $1 AND api_id = $2;
-            """,
-            source_id,
-            api_id,
-            period_value,
-        )
-        if result == "UPDATE 1":
-            return True
-
-        # Row doesn't exist (YAML-only source) — upsert a minimal row.
-        # We need a parent source_registry row for the FK; create one if missing.
-        sr_exists = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM source_registry WHERE source_id = $1);",
-            source_id,
-        )
-        if not sr_exists:
-            await conn.execute(
-                """
-                INSERT INTO source_registry (source_id, name, base_url, created_by)
-                VALUES ($1, $1, '', 'watermark_auto')
-                ON CONFLICT (source_id) DO NOTHING;
-                """,
-                source_id,
-            )
-
-        await conn.execute(
-            """
-            INSERT INTO source_api_endpoints (source_id, api_id, name, endpoint, last_fetched_period)
-            VALUES ($1, $2, $2, '', $3)
-            ON CONFLICT (source_id, api_id)
-            DO UPDATE SET last_fetched_period = EXCLUDED.last_fetched_period;
-            """,
-            source_id,
-            api_id,
-            period_value,
-        )
-        return True

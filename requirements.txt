@@ -25,3 +25,9 @@ langchain-openai==0.2.0
 
 # PDF splitting (for parallel batch processing)
 pymupdf==1.25.3
+
+# YAML config parsing (for agent source configs)
+pyyaml==6.0.2
+
+# Date utilities (for period-aware incremental fetching)
+python-dateutil==2.9.0

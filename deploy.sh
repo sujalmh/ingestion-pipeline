@@ -11,12 +11,12 @@ echo "Local:  $LOCAL_DIR"
 echo "Remote: $VM:$REMOTE_DIR"
 echo ""
 
-# Copy updated files
 echo "Copying app files..."
 scp "$LOCAL_DIR/app/main.py" \
     "$LOCAL_DIR/app/dashboard.html" \
     "$LOCAL_DIR/app/approve.html" \
     "$LOCAL_DIR/app/upload.html" \
+    "$LOCAL_DIR/app/source_manage.html" \
     "$LOCAL_DIR/app/models/db.py" \
     "$VM:$REMOTE_DIR/app/"
 
@@ -26,13 +26,27 @@ scp "$LOCAL_DIR/app/services/vector_adapter.py" \
     "$LOCAL_DIR/app/services/pdf_splitter.py" \
     "$VM:$REMOTE_DIR/app/services/"
 
+echo "Copying agent module..."
+ssh "$VM" "mkdir -p $REMOTE_DIR/app/agent/sources"
+scp "$LOCAL_DIR/app/agent/__init__.py" \
+    "$LOCAL_DIR/app/agent/source_config.py" \
+    "$LOCAL_DIR/app/agent/auth_manager.py" \
+    "$LOCAL_DIR/app/agent/fetcher.py" \
+    "$LOCAL_DIR/app/agent/converter.py" \
+    "$LOCAL_DIR/app/agent/pipeline_feeder.py" \
+    "$LOCAL_DIR/app/agent/orchestrator.py" \
+    "$VM:$REMOTE_DIR/app/agent/"
+scp "$LOCAL_DIR/app/agent/sources/mospi.yaml" \
+    "$VM:$REMOTE_DIR/app/agent/sources/"
+
 echo "Copying config..."
 scp "$LOCAL_DIR/app/config/settings.py" "$VM:$REMOTE_DIR/app/config/"
 scp "$LOCAL_DIR/requirements.txt" "$VM:$REMOTE_DIR/"
+scp "$LOCAL_DIR/app/models/schemas.py" "$VM:$REMOTE_DIR/app/models/"
 
 echo ""
-echo "Installing new dependency (pymupdf)..."
-ssh "$VM" "cd $REMOTE_DIR && source venv/bin/activate 2>/dev/null || source .venv/bin/activate 2>/dev/null; pip install pymupdf"
+echo "Installing new dependencies (pymupdf, pyyaml)..."
+ssh "$VM" "cd $REMOTE_DIR && source venv/bin/activate 2>/dev/null || source .venv/bin/activate 2>/dev/null; pip install pymupdf pyyaml"
 
 echo ""
 echo "Restarting server..."
@@ -44,6 +58,7 @@ echo "Checking health..."
 curl -s http://100.104.12.231:8073/health | python3 -m json.tool
 echo ""
 echo "=== Done ==="
-echo "Dashboard:     http://100.104.12.231:8073/dashboard"
-echo "Upload Page:   http://100.104.12.231:8073/upload"
-echo "Approval Page: http://100.104.12.231:8073/approve"
+echo "Dashboard:         http://100.104.12.231:8073/dashboard"
+echo "Upload Page:       http://100.104.12.231:8073/upload"
+echo "Approval Page:     http://100.104.12.231:8073/approve"
+echo "Source Management:  http://100.104.12.231:8073/agent/manage"

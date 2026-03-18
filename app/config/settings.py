@@ -63,6 +63,15 @@ class Settings:
     PDF_BATCH_THRESHOLD_MB: float = float(os.getenv("PDF_BATCH_THRESHOLD_MB", "5"))
     PDF_BATCH_PAGE_COUNT: int = int(os.getenv("PDF_BATCH_PAGE_COUNT", "20"))
     
+    # Data API Agent
+    MOSPI_EMAIL: str = os.getenv("MOSPI_EMAIL", "")
+    MOSPI_PASSWORD: str = os.getenv("MOSPI_PASSWORD", "")
+    DATA_GOV_API_KEY: str = os.getenv("DATA_GOV_API_KEY", "")
+    AGENT_FETCH_TIMEOUT: int = int(os.getenv("AGENT_FETCH_TIMEOUT", "120"))
+    AGENT_RETRY_ATTEMPTS: int = int(os.getenv("AGENT_RETRY_ATTEMPTS", "3"))
+    AGENT_SCHEDULE_ENABLED: bool = os.getenv("AGENT_SCHEDULE_ENABLED", "false").lower() == "true"
+    AGENT_SCHEDULE_INTERVAL_HOURS: int = int(os.getenv("AGENT_SCHEDULE_INTERVAL_HOURS", "24"))
+
     @property
     def max_file_size_bytes(self) -> int:
         return int(self.MAX_FILE_SIZE_MB * 1024 * 1024)

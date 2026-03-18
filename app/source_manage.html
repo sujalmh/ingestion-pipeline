@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Source Management - Data Ingestion Pipeline</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d26;
+            --border: #2d3040;
+            --text: #e4e6ef;
+            --text-dim: #8b8fa3;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --success: #22c55e;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --radius: 12px;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 2rem;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #6366f1, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .subtitle { color: var(--text-dim); margin-bottom: 2rem; }
+        .toolbar {
+            display: flex;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 0.6rem 1.2rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-danger { background: var(--danger); color: #fff; }
+        .btn-danger:hover { opacity: 0.9; }
+        .btn-success { background: var(--success); color: #fff; }
+        .btn-success:hover { opacity: 0.9; }
+        .btn-ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+        .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+        .btn-sm { padding: 0.35rem 0.75rem; font-size: 0.8rem; }
+        .source-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            transition: border-color 0.2s;
+        }
+        .source-card:hover { border-color: var(--accent); }
+        .source-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+        .source-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+        .badge {
+            padding: 0.2rem 0.6rem;
+            border-radius: 100px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .badge-yaml { background: rgba(99,102,241,0.15); color: var(--accent); }
+        .badge-db { background: rgba(34,197,94,0.15); color: var(--success); }
+        .badge-disabled { background: rgba(239,68,68,0.15); color: var(--danger); }
+        .source-meta {
+            display: flex;
+            gap: 1.5rem;
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            margin-bottom: 1rem;
+        }
+        .api-list { margin-top: 0.75rem; }
+        .api-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            background: rgba(255,255,255,0.02);
+            border-radius: 6px;
+            margin-bottom: 0.35rem;
+            font-size: 0.85rem;
+        }
+        .api-row .method {
+            font-weight: 700;
+            font-size: 0.7rem;
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            background: rgba(99,102,241,0.2);
+            color: var(--accent);
+        }
+        .api-row .endpoint { color: var(--text-dim); font-family: monospace; }
+        .api-row .schedule { color: var(--warning); font-size: 0.75rem; margin-left: auto; }
+        .api-row .period-badge {
+            font-size: 0.65rem;
+            padding: 0.1rem 0.4rem;
+            border-radius: 4px;
+            background: rgba(245,158,11,0.15);
+            color: var(--warning);
+            font-weight: 600;
+        }
+        .period-section {
+            margin-top: 0.75rem;
+            padding: 0.75rem;
+            background: rgba(99,102,241,0.05);
+            border: 1px solid rgba(99,102,241,0.15);
+            border-radius: 8px;
+        }
+        .period-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: var(--text-dim);
+            margin-bottom: 0.5rem;
+        }
+        .period-toggle input { accent-color: var(--accent); }
+        .period-fields { display: none; }
+        .period-fields.active { display: block; }
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 1000;
+            justify-content: center;
+            align-items: flex-start;
+            padding-top: 5vh;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            width: 600px;
+            max-height: 85vh;
+            overflow-y: auto;
+            padding: 2rem;
+        }
+        .modal h2 { margin-bottom: 1.5rem; font-size: 1.3rem; }
+        .form-group { margin-bottom: 1.25rem; }
+        .form-group label {
+            display: block;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 0.4rem;
+            color: var(--text-dim);
+        }
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%;
+            padding: 0.6rem 0.8rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 0.9rem;
+            font-family: inherit;
+        }
+        .form-group textarea { min-height: 80px; resize: vertical; }
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        .form-row { display: flex; gap: 1rem; }
+        .form-row .form-group { flex: 1; }
+        .form-actions { display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1.5rem; }
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            padding: 0.8rem 1.5rem;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            z-index: 2000;
+            animation: slideIn 0.3s ease-out;
+        }
+        .toast-success { background: var(--success); color: #fff; }
+        .toast-error { background: var(--danger); color: #fff; }
+        @keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .loading { text-align: center; padding: 3rem; color: var(--text-dim); }
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-dim);
+        }
+        .empty-state h3 { color: var(--text); margin-bottom: 0.5rem; }
+        /* Test Results */
+        .test-result {
+            margin-top: 1rem;
+            padding: 1rem;
+            border-radius: 8px;
+            font-size: 0.85rem;
+        }
+        .test-success { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); }
+        .test-fail { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); }
+        pre {
+            background: var(--bg);
+            padding: 0.75rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+            max-height: 200px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🔌 API Source Management</h1>
+    <p class="subtitle">Register and manage business APIs for automated data ingestion</p>
+
+    <div class="toolbar">
+        <button class="btn btn-primary" onclick="showAddSourceModal()">+ Add New Source</button>
+        <button class="btn btn-ghost" onclick="showTestFetchModal()">🧪 Test an API</button>
+        <button class="btn btn-ghost" onclick="showStatusModal()">📈 Run History</button>
+        <button class="btn btn-ghost" onclick="showApiListModal()">📋 API List</button>
+        <button class="btn btn-ghost" onclick="refreshSources()">↻ Refresh</button>
+        <button class="btn btn-success" onclick="runAll()">▶ Run All Sources</button>
+    </div>
+
+    <div id="sources-container"><div class="loading">Loading sources...</div></div>
+</div>
+
+<!-- Add Source Modal -->
+<div class="modal-overlay" id="addSourceModal">
+    <div class="modal">
+        <h2>Register New API Source</h2>
+        <form id="addSourceForm" onsubmit="return submitSource(event)">
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Source ID (a-z, 0-9, underscores)</label>
+                    <input name="source_id" pattern="[a-z0-9_]+" required placeholder="e.g. rbi_data">
+                </div>
+                <div class="form-group">
+                    <label>Name</label>
+                    <input name="name" required placeholder="e.g. Reserve Bank of India">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Base URL</label>
+                <input name="base_url" type="url" required placeholder="https://api.example.com">
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Auth Type</label>
+                    <select name="auth_type">
+                        <option value="none">None</option>
+                        <option value="token">Token (Login-based)</option>
+                        <option value="api_key">API Key</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Auth Login URL (for token)</label>
+                    <input name="auth_login_url" placeholder="/api/login">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Auth Credentials (JSON object)</label>
+                <textarea name="auth_credentials" placeholder='{"email": "user@example.com", "password": "pass"}'></textarea>
+            </div>
+
+            <h3 style="margin: 1.5rem 0 1rem; font-size: 1rem;">API Endpoints</h3>
+            <div id="api-endpoints-container"></div>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="addEndpointForm()" style="margin-bottom: 1rem;">+ Add Endpoint</button>
+
+            <div class="form-actions">
+                <button type="button" class="btn btn-ghost" onclick="closeModal('addSourceModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Register Source</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Test Fetch Modal -->
+<div class="modal-overlay" id="testFetchModal">
+    <div class="modal">
+        <h2>🧪 Test Fetch an API</h2>
+        <form id="testFetchForm" onsubmit="return submitTestFetch(event)">
+            <div class="form-group">
+                <label>Base URL</label>
+                <input name="base_url" type="url" required placeholder="https://api.example.com">
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Endpoint</label>
+                    <input name="endpoint" required placeholder="/api/data">
+                </div>
+                <div class="form-group">
+                    <label>Method</label>
+                    <select name="method"><option>GET</option><option>POST</option></select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Params (JSON)</label>
+                <textarea name="params" placeholder='{"key": "value"}'></textarea>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Auth Type</label>
+                    <select name="auth_type">
+                        <option value="none">None</option>
+                        <option value="token">Token</option>
+                        <option value="api_key">API Key</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Auth Login URL</label>
+                    <input name="auth_login_url" placeholder="/api/login">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Auth Credentials (JSON)</label>
+                <textarea name="auth_credentials" placeholder='{"email": "...", "password": "..."}'></textarea>
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-ghost" onclick="closeModal('testFetchModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Test Fetch</button>
+            </div>
+        </form>
+        <div id="testResult"></div>
+    </div>
+</div>
+
+<!-- Status Modal -->
+<div class="modal-overlay" id="statusModal">
+    <div class="modal" style="width: 800px; max-width: 90vw;">
+        <h2>📈 Recent Agent Runs</h2>
+        <div id="statusContainer" style="overflow-x: auto;"></div>
+        <div class="form-actions">
+            <button type="button" class="btn btn-ghost" onclick="refreshStatus()">↻ Refresh</button>
+            <button type="button" class="btn btn-ghost" onclick="closeModal('statusModal')">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- API List Modal -->
+<div class="modal-overlay" id="apiListModal">
+    <div class="modal" style="width: 800px; max-width: 90vw;">
+        <h2>📋 All Registered APIs</h2>
+        <div id="apiListContainer" style="overflow-x: auto; max-height: 60vh;"></div>
+        <div class="form-actions">
+            <button type="button" class="btn btn-ghost" onclick="refreshApiList()">↻ Refresh</button>
+            <button type="button" class="btn btn-ghost" onclick="closeModal('apiListModal')">Close</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const API = '';
+
+async function refreshSources() {
+    const container = document.getElementById('sources-container');
+    container.innerHTML = '<div class="loading">Loading...</div>';
+    try {
+        const res = await fetch(`${API}/agent/sources`);
+        const data = await res.json();
+        if (!data.sources || data.sources.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <h3>No sources configured</h3>
+                    <p>Add a new API source to get started</p>
+                </div>`;
+            return;
+        }
+        container.innerHTML = data.sources.map(s => renderSource(s)).join('');
+    } catch(e) { container.innerHTML = `<div class="loading">Error: ${e.message}</div>`; }
+}
+
+function renderSource(s) {
+    const badge = s.origin === 'yaml'
+        ? '<span class="badge badge-yaml">YAML</span>'
+        : '<span class="badge badge-db">DB</span>';
+    const statusBadge = !s.enabled ? ' <span class="badge badge-disabled">Disabled</span>' : '';
+    const actions = s.editable
+        ? `<button class="btn btn-ghost btn-sm" onclick="deleteSource('${s.source_id}')">🗑</button>
+           <button class="btn btn-ghost btn-sm" onclick="toggleSource('${s.source_id}', ${!s.enabled})">${s.enabled ? '⏸' : '▶'}</button>`
+        : '';
+    const apis = (s.apis || []).map(a => {
+        const periodBadge = a.period
+            ? `<span class="period-badge" title="Incremental: ${a.period.type}, param=${a.period.param_name || 'range'}, lookback=${a.period.lookback}">${a.period.type}</span>`
+            : '';
+        return `<div class="api-row">
+            <span class="method">${a.method}</span>
+            <span>${a.name}</span>
+            ${periodBadge}
+            <span class="endpoint">${a.endpoint}</span>
+            <span class="schedule">${a.schedule}</span>
+        </div>`;
+    }).join('');
+
+    return `
+        <div class="source-card">
+            <div class="source-header">
+                <div>
+                    <span class="source-name">${s.name}</span>
+                    ${badge} ${statusBadge}
+                </div>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    ${actions}
+                    <button class="btn btn-success btn-sm" onclick="runSource('${s.source_id}')">▶ Run</button>
+                </div>
+            </div>
+            <div class="source-meta">
+                <span>ID: <strong>${s.source_id}</strong></span>
+                <span>${s.base_url}</span>
+                <span>Auth: ${s.auth_type}</span>
+                <span>${s.api_count} API(s)</span>
+            </div>
+            <div class="api-list">${apis}</div>
+        </div>`;
+}
+
+function showAddSourceModal() { document.getElementById('addSourceModal').classList.add('active'); epCount=0; document.getElementById('api-endpoints-container').innerHTML=''; addEndpointForm(); }
+function showTestFetchModal() { document.getElementById('testFetchModal').classList.add('active'); document.getElementById('testResult').innerHTML=''; }
+function showStatusModal() { document.getElementById('statusModal').classList.add('active'); refreshStatus(); }
+function showApiListModal() { document.getElementById('apiListModal').classList.add('active'); refreshApiList(); }
+function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+async function refreshApiList() {
+    const el = document.getElementById('apiListContainer');
+    el.innerHTML = '<div class="loading">Loading APIs...</div>';
+    try {
+        const res = await fetch(`${API}/agent/sources`);
+        const data = await res.json();
+        if (!data.sources || data.sources.length === 0) {
+            el.innerHTML = '<div class="empty-state"><h3>No sources configured</h3></div>';
+            return;
+        }
+        
+        // Flatten all APIs from all sources
+        let allApis = [];
+        data.sources.forEach(s => {
+            (s.apis || []).forEach(a => {
+                allApis.push({ ...a, source_name: s.name, source_id: s.source_id, enabled: s.enabled });
+            });
+        });
+        
+        if (allApis.length === 0) {
+            el.innerHTML = '<div class="empty-state"><h3>No APIs configured</h3></div>';
+            return;
+        }
+
+        let html = '<table style="width:100%;text-align:left;border-collapse:collapse;font-size:0.85rem;"><tr style="border-bottom:1px solid var(--border);"><th style="padding:0.75rem;">Source</th><th style="padding:0.75rem;">API Name</th><th style="padding:0.75rem;">Method</th><th style="padding:0.75rem;">Endpoint</th><th style="padding:0.75rem;">Schedule</th><th style="padding:0.75rem;">Period</th><th style="padding:0.75rem;">Status</th></tr>';
+        
+        allApis.forEach(a => {
+            const statusStr = a.enabled ? '<span style="color:var(--success)">Active</span>' : '<span style="color:var(--danger)">Disabled</span>';
+            let periodStr = '<span style="color:var(--text-dim);">—</span>';
+            if (a.period) {
+                const p = a.period;
+                const detail = p.param_name ? `${p.param_name} (${p.param_format})` : `range (${p.range_format || p.param_format})`;
+                periodStr = `<span class="period-badge">${p.type}</span> <span style="font-size:0.75rem;color:var(--text-dim);">${detail}</span>`;
+            }
+            html += `<tr style="border-bottom:1px solid var(--border);background:rgba(255,255,255,0.02);">
+                <td style="padding:0.75rem;font-weight:600;">${a.source_name}</td>
+                <td style="padding:0.75rem;">${a.name}</td>
+                <td style="padding:0.75rem;"><span class="method" style="font-weight:700;font-size:0.7rem;padding:0.15rem 0.4rem;border-radius:4px;background:rgba(99,102,241,0.2);color:var(--accent);">${a.method}</span></td>
+                <td style="padding:0.75rem;font-family:monospace;color:var(--text-dim);">${a.endpoint}</td>
+                <td style="padding:0.75rem;color:var(--warning);">${a.schedule || 'manual'}</td>
+                <td style="padding:0.75rem;">${periodStr}</td>
+                <td style="padding:0.75rem;">${statusStr}</td>
+            </tr>`;
+        });
+        html += '</table>';
+        el.innerHTML = html;
+    } catch(e) { el.innerHTML = `<div class="test-result test-fail">Error: ${e.message}</div>`; }
+}
+
+async function refreshStatus() {
+    const el = document.getElementById('statusContainer');
+    el.innerHTML = '<div class="loading">Loading history...</div>';
+    try {
+        const res = await fetch(`${API}/agent/status?limit=10`);
+        const data = await res.json();
+        if (!data.runs || data.runs.length === 0) {
+            el.innerHTML = '<div class="empty-state"><h3>No runs found</h3></div>';
+            return;
+        }
+        let html = '<table style="width:100%;text-align:left;border-collapse:collapse;font-size:0.85rem;"><tr style="border-bottom:1px solid var(--border);"><th style="padding:0.75rem;">Time</th><th style="padding:0.75rem;">Source</th><th style="padding:0.75rem;">Status</th><th style="padding:0.75rem;">Fetched</th><th style="padding:0.75rem;">Ingested</th><th style="padding:0.75rem;">Duration</th></tr>';
+        
+        data.runs.forEach(r => {
+            // Treat the naive ISO string as UTC like we do in python by appending 'Z' if missing
+            const timeDate = r.started_at.endsWith('Z') ? new Date(r.started_at) : new Date(r.started_at + 'Z');
+            const time = isNaN(timeDate) ? r.started_at : timeDate.toLocaleString();
+            
+            let statusStr = r.status.toUpperCase();
+            let statusColor = r.status === 'completed' ? 'var(--success)' : (r.status === 'failed' ? 'var(--danger)' : 'var(--warning)');
+            
+            // extract duration and fetched/ingested safely, in case of nulls
+            let details = {};
+            try { details = JSON.parse(r.run_details || '{}'); } catch(e){}
+            const dur = details.duration_seconds ? details.duration_seconds.toFixed(2) + 's' : '-';
+            
+            html += `<tr style="border-bottom:1px solid var(--border);background:rgba(255,255,255,0.02);"><td style="padding:0.75rem;">${time}</td><td style="padding:0.75rem;font-weight:600;">${r.source_id}${r.api_id ? '/'+r.api_id : ''}</td><td style="padding:0.75rem;color:${statusColor};font-weight:bold;">${statusStr}</td><td style="padding:0.75rem;">${r.files_fetched || 0}</td><td style="padding:0.75rem;">${r.files_ingested || 0}</td><td style="padding:0.75rem;color:var(--text-dim);">${dur}</td></tr>`;
+        });
+        html += '</table>';
+        el.innerHTML = html;
+    } catch(e) { el.innerHTML = `<div class="test-result test-fail">Error: ${e.message}</div>`; }
+}
+
+let epCount = 0;
+function addEndpointForm() {
+    const c = document.getElementById('api-endpoints-container');
+    const n = epCount++;
+    c.insertAdjacentHTML('beforeend', `
+        <div style="background:var(--bg);padding:1rem;border-radius:8px;margin-bottom:0.75rem;position:relative;" id="ep-${n}">
+            <button type="button" onclick="removeEndpoint(${n})" style="position:absolute;top:0.5rem;right:0.5rem;background:var(--danger);color:#fff;border:none;border-radius:6px;padding:0.2rem 0.5rem;font-size:0.75rem;cursor:pointer;" title="Remove endpoint">✕</button>
+            <div class="form-row">
+                <div class="form-group"><label>API ID</label><input name="ep_api_id_${n}" pattern="[a-z0-9_]+" required placeholder="e.g. get_rates"></div>
+                <div class="form-group"><label>Name</label><input name="ep_name_${n}" required placeholder="e.g. Exchange Rates"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Endpoint</label><input name="ep_endpoint_${n}" required placeholder="/api/rates"></div>
+                <div class="form-group"><label>Method</label>
+                    <select name="ep_method_${n}"><option>GET</option><option>POST</option></select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Output Format</label>
+                    <select name="ep_format_${n}"><option value="json">JSON</option><option value="csv">CSV</option></select>
+                </div>
+                <div class="form-group"><label>Schedule</label>
+                    <select name="ep_schedule_${n}"><option value="manual">Manual</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select>
+                </div>
+            </div>
+            <div class="form-group"><label>Params (JSON)</label><textarea name="ep_params_${n}" placeholder='{"key":"value"}'></textarea></div>
+            <div class="period-section">
+                <label class="period-toggle">
+                    <input type="checkbox" name="ep_period_enabled_${n}" onchange="togglePeriodFields(${n}, this.checked)">
+                    Enable Period-Aware Incremental Fetching
+                </label>
+                <div class="period-fields" id="period-fields-${n}">
+                    <div class="form-row">
+                        <div class="form-group"><label>Period Type</label>
+                            <select name="ep_period_type_${n}">
+                                <option value="yearly">Yearly</option>
+                                <option value="monthly">Monthly</option>
+                                <option value="quarterly">Quarterly</option>
+                                <option value="daily">Daily</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label>Mode</label>
+                            <select name="ep_period_mode_${n}" onchange="togglePeriodMode(${n}, this.value)">
+                                <option value="single">Single Param (e.g. year=2025)</option>
+                                <option value="range">Range Params (from/to)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="period-single-${n}">
+                        <div class="form-row">
+                            <div class="form-group"><label>Param Name</label>
+                                <input name="ep_period_param_${n}" placeholder="e.g. year">
+                            </div>
+                            <div class="form-group"><label>Format (strftime)</label>
+                                <input name="ep_period_format_${n}" value="%Y" placeholder="%Y or %Y-%m-%d">
+                            </div>
+                        </div>
+                    </div>
+                    <div id="period-range-${n}" style="display:none;">
+                        <div class="form-row">
+                            <div class="form-group"><label>From Param</label>
+                                <input name="ep_period_from_${n}" placeholder="e.g. from_date">
+                            </div>
+                            <div class="form-group"><label>To Param</label>
+                                <input name="ep_period_to_${n}" placeholder="e.g. to_date">
+                            </div>
+                        </div>
+                        <div class="form-group"><label>Range Format (strftime)</label>
+                            <input name="ep_period_range_format_${n}" value="%Y-%m-%d" placeholder="%Y-%m-%d">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Lookback (re-fetch last N periods)</label>
+                            <input name="ep_period_lookback_${n}" type="number" value="1" min="0" max="12">
+                        </div>
+                        <div class="form-group"><label>Initial Start (first run)</label>
+                            <input name="ep_period_initial_${n}" placeholder="e.g. 2013 or 2020-01">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>`);
+}
+
+function togglePeriodFields(n, enabled) {
+    const el = document.getElementById('period-fields-' + n);
+    if (el) el.classList.toggle('active', enabled);
+}
+
+function togglePeriodMode(n, mode) {
+    const single = document.getElementById('period-single-' + n);
+    const range = document.getElementById('period-range-' + n);
+    if (single) single.style.display = mode === 'single' ? '' : 'none';
+    if (range) range.style.display = mode === 'range' ? '' : 'none';
+}
+
+function removeEndpoint(n) {
+    const el = document.getElementById(`ep-${n}`);
+    if (el) {
+        // Clear required fields before removing so form validation doesn't fail
+        el.querySelectorAll('[required]').forEach(inp => inp.removeAttribute('required'));
+        el.remove();
+    }
+}
+
+async function submitSource(e) {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const body = {
+        source_id: f.get('source_id'),
+        name: f.get('name'),
+        base_url: f.get('base_url'),
+        auth_type: f.get('auth_type'),
+        auth_login_url: f.get('auth_login_url') || null,
+        auth_credentials: safeParse(f.get('auth_credentials')),
+        apis: []
+    };
+    for (let i = 0; i < epCount; i++) {
+        if (!f.get(`ep_api_id_${i}`)) continue;
+        const api = {
+            api_id: f.get(`ep_api_id_${i}`),
+            name: f.get(`ep_name_${i}`),
+            endpoint: f.get(`ep_endpoint_${i}`),
+            method: f.get(`ep_method_${i}`),
+            output_format: f.get(`ep_format_${i}`),
+            schedule: f.get(`ep_schedule_${i}`),
+            params: safeParse(f.get(`ep_params_${i}`)),
+        };
+        if (f.get(`ep_period_enabled_${i}`)) {
+            const mode = f.get(`ep_period_mode_${i}`);
+            const period = {
+                type: f.get(`ep_period_type_${i}`),
+                lookback: parseInt(f.get(`ep_period_lookback_${i}`)) || 1,
+                initial_start: f.get(`ep_period_initial_${i}`) || null,
+            };
+            if (mode === 'range') {
+                period.range_params = {
+                    from: f.get(`ep_period_from_${i}`) || 'from_date',
+                    to: f.get(`ep_period_to_${i}`) || 'to_date',
+                };
+                period.range_format = f.get(`ep_period_range_format_${i}`) || '%Y-%m-%d';
+                period.param_format = period.range_format;
+            } else {
+                period.param_name = f.get(`ep_period_param_${i}`) || null;
+                period.param_format = f.get(`ep_period_format_${i}`) || '%Y';
+            }
+            api.period = period;
+        }
+        body.apis.push(api);
+    }
+    try {
+        const res = await fetch(`${API}/agent/sources`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        const data = await res.json();
+        if (res.ok) { toast('Source registered!', 'success'); closeModal('addSourceModal'); e.target.reset(); epCount=0; document.getElementById('api-endpoints-container').innerHTML=''; refreshSources(); }
+        else { toast(data.detail || 'Error', 'error'); }
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+async function submitTestFetch(e) {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const body = {
+        base_url: f.get('base_url'),
+        endpoint: f.get('endpoint'),
+        method: f.get('method'),
+        params: safeParse(f.get('params')),
+        auth_type: f.get('auth_type'),
+        auth_login_url: f.get('auth_login_url') || null,
+        auth_credentials: safeParse(f.get('auth_credentials')),
+    };
+    const el = document.getElementById('testResult');
+    el.innerHTML = '<div class="loading">Fetching...</div>';
+    try {
+        const res = await fetch(`${API}/agent/sources/test`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        const data = await res.json();
+        if (data.success) {
+            el.innerHTML = `<div class="test-result test-success">
+                <strong>✅ Success</strong> — ${data.row_count || '?'} rows, ${data.content_type || 'unknown type'}
+                <pre>${JSON.stringify(data.preview, null, 2)}</pre>
+            </div>`;
+        } else {
+            el.innerHTML = `<div class="test-result test-fail"><strong>❌ Failed</strong> — ${data.error || 'Unknown error'}</div>`;
+        }
+    } catch(e) { el.innerHTML = `<div class="test-result test-fail"><strong>Error:</strong> ${e.message}</div>`; }
+}
+
+async function runSource(sid) { toast(`Running ${sid}...`); const res = await fetch(`${API}/agent/run/${sid}`, {method:'POST'}); const d = await res.json(); toast(d.success ? `Done: ${d.files_ingested || 0} ingested` : (d.error || 'Failed'), d.success ? 'success' : 'error'); }
+async function runAll() { toast('Running all sources...'); const res = await fetch(`${API}/agent/run`, {method:'POST'}); const d = await res.json(); toast(d.success ? `Done: ${d.sources_successful || 0} succeeded` : 'Some failed', d.success ? 'success' : 'error'); }
+async function deleteSource(sid) { if (!confirm(`Delete source "${sid}"?`)) return; const res = await fetch(`${API}/agent/sources/${sid}`, {method:'DELETE'}); res.ok ? (toast('Deleted', 'success'), refreshSources()) : toast('Failed', 'error'); }
+async function toggleSource(sid, en) { const res = await fetch(`${API}/agent/sources/${sid}/toggle?enabled=${en}`, {method:'PATCH'}); res.ok ? (toast(en ? 'Enabled' : 'Disabled', 'success'), refreshSources()) : toast('Failed', 'error'); }
+
+function safeParse(s) { try { return s ? JSON.parse(s) : {}; } catch { return {}; } }
+function toast(msg, type='success') { const t = document.createElement('div'); t.className=`toast toast-${type}`; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(), 3500); }
+
+document.addEventListener('DOMContentLoaded', refreshSources);
+window.addEventListener('click', e => { if (e.target.classList.contains('modal-overlay')) e.target.classList.remove('active'); });
+</script>
+</body>
+</html>

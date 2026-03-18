@@ -42,6 +42,11 @@ from app.models.schemas import (
     InboundFileStatus,
     UploadResponse,
     BatchUploadResponse,
+    SourceCreate,
+    SourceUpdate,
+    APIEndpointCreate,
+    TestFetchRequest,
+    TestFetchResponse,
 )
 from app.services.registration import register_uploaded_file
 
@@ -58,6 +63,11 @@ async def lifespan(app: FastAPI):
     upload_dir = Path(settings.UPLOAD_DIRECTORY)
     upload_dir.mkdir(parents=True, exist_ok=True)
     print(f"📁 Upload directory: {upload_dir.resolve()}")
+    
+    # Create agent downloads directory
+    agent_dir = upload_dir / "agent_downloads"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    print(f"📁 Agent downloads directory: {agent_dir.resolve()}")
     
     # Initialize database
     await connect_db()
@@ -1688,6 +1698,365 @@ async def hitl_review_reject(file_id: str):
         return {"success": True, "file_id": file_id}
     finally:
         await conn.close()
+
+
+# ==========================================
+# Data API Agent Endpoints
+# ==========================================
+
+@app.post("/agent/run", tags=["Data API Agent"])
+async def agent_run_all():
+    """Run all configured and enabled data sources."""
+    from app.agent.orchestrator import run_agent_all
+    result = await run_agent_all()
+    return result
+
+
+@app.post("/agent/run/{source_id}", tags=["Data API Agent"])
+async def agent_run_source(source_id: str):
+    """Run all APIs for a specific data source."""
+    from app.agent.orchestrator import run_agent_source
+    result = await run_agent_source(source_id)
+    if not result.get("success") and "not found" in result.get("error", ""):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@app.post("/agent/run/{source_id}/{api_id}", tags=["Data API Agent"])
+async def agent_run_single_api(source_id: str, api_id: str):
+    """Run a single API endpoint from a data source."""
+    from app.agent.orchestrator import run_agent_single_api
+    result = await run_agent_single_api(source_id, api_id)
+    if not result.get("success") and "not found" in result.get("error", ""):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@app.get("/agent/status", tags=["Data API Agent"])
+async def agent_status(source_id: Optional[str] = Query(default=None), limit: int = Query(default=20, le=100)):
+    """Get agent run history and status."""
+    from app.models.db import get_agent_runs
+    runs = await get_agent_runs(source_id=source_id, limit=limit)
+    # Serialize datetimes
+    for run in runs:
+        for k in ("started_at", "completed_at"):
+            if run.get(k):
+                run[k] = run[k].isoformat()
+    return {"success": True, "runs": runs}
+
+
+# ==========================================
+# Source Registry Management Endpoints
+# ==========================================
+
+@app.get("/agent/sources", tags=["Source Registry"])
+async def list_sources():
+    """List all configured sources (YAML + DB merged)."""
+    from app.agent.source_config import get_all_sources
+    configs = await get_all_sources()
+
+    sources = []
+    for sid, cfg in sorted(configs.items()):
+        sources.append({
+            "source_id": cfg.source_id,
+            "name": cfg.name,
+            "base_url": cfg.base_url,
+            "auth_type": cfg.auth.type,
+            "enabled": cfg.enabled,
+            "origin": cfg.origin,
+            "editable": cfg.origin == "db",
+            "api_count": len(cfg.apis),
+            "apis": [
+                {
+                    "api_id": a.id,
+                    "name": a.name,
+                    "endpoint": a.endpoint,
+                    "method": a.method,
+                    "schedule": a.schedule,
+                    "enabled": a.enabled,
+                    "output_format": a.output_format,
+                    "period": a.period.model_dump() if a.period else None,
+                }
+                for a in cfg.apis
+            ],
+        })
+
+    return {"success": True, "total": len(sources), "sources": sources}
+
+
+@app.get("/agent/sources/{source_id}", tags=["Source Registry"])
+async def get_source_detail(source_id: str):
+    """Get details of a specific source."""
+    from app.agent.source_config import get_source
+    cfg = await get_source(source_id)
+    if not cfg:
+        raise HTTPException(status_code=404, detail=f"Source '{source_id}' not found")
+
+    return {
+        "success": True,
+        "source": {
+            "source_id": cfg.source_id,
+            "name": cfg.name,
+            "base_url": cfg.base_url,
+            "auth_type": cfg.auth.type,
+            "enabled": cfg.enabled,
+            "origin": cfg.origin,
+            "editable": cfg.origin == "db",
+            "apis": [
+                {
+                    "api_id": a.id,
+                    "name": a.name,
+                    "endpoint": a.endpoint,
+                    "method": a.method,
+                    "description": a.description,
+                    "output_format": a.output_format,
+                    "params": a.params,
+                    "headers": a.headers,
+                    "schedule": a.schedule,
+                    "enabled": a.enabled,
+                    "metadata": a.metadata,
+                    "period": a.period.model_dump() if a.period else None,
+                }
+                for a in cfg.apis
+            ],
+        },
+    }
+
+
+@app.post("/agent/sources", tags=["Source Registry"])
+async def register_source(payload: SourceCreate):
+    """
+    Register a new API source with its endpoints.
+    Only creates DB-backed sources (YAML sources are managed via config files).
+    """
+    from app.agent.source_config import get_source_config
+    from app.models.db import insert_source
+
+    # Block if source_id conflicts with a YAML source
+    yaml_cfg = get_source_config(payload.source_id)
+    if yaml_cfg:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Source '{payload.source_id}' already exists as a YAML config and cannot be overridden via API.",
+        )
+
+    source_data = {
+        "source_id": payload.source_id,
+        "name": payload.name,
+        "base_url": payload.base_url,
+        "auth_type": payload.auth_type.value,
+        "auth_login_url": payload.auth_login_url,
+        "auth_token_expiry_minutes": payload.auth_token_expiry_minutes or 14,
+        "auth_credentials": payload.auth_credentials or {},
+        "default_metadata": payload.default_metadata or {},
+        "apis": [
+            {
+                "api_id": api.api_id,
+                "name": api.name,
+                "endpoint": api.endpoint,
+                "method": api.method,
+                "description": api.description,
+                "output_format": api.output_format,
+                "params": api.params or {},
+                "headers": api.headers or {},
+                "schedule": api.schedule,
+                "metadata": api.metadata or {},
+                "period_config": api.period.model_dump() if api.period else None,
+            }
+            for api in payload.apis
+        ],
+    }
+
+    try:
+        sid = await insert_source(source_data)
+        return {
+            "success": True,
+            "message": f"Source '{sid}' registered with {len(payload.apis)} API(s)",
+            "source_id": sid,
+            "api_count": len(payload.apis),
+        }
+    except Exception as e:
+        if "duplicate key" in str(e).lower() or "unique" in str(e).lower():
+            raise HTTPException(status_code=409, detail=f"Source '{payload.source_id}' already exists")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/agent/sources/{source_id}", tags=["Source Registry"])
+async def update_source_endpoint(source_id: str, payload: SourceUpdate):
+    """Update a DB-registered source. YAML sources cannot be edited via API."""
+    from app.agent.source_config import get_source_config
+    from app.models.db import update_source as db_update_source
+
+    yaml_cfg = get_source_config(source_id)
+    if yaml_cfg:
+        raise HTTPException(
+            status_code=403,
+            detail="This source is managed by YAML config and cannot be edited via API.",
+        )
+
+    updates = payload.model_dump(exclude_none=True)
+    if "auth_type" in updates:
+        updates["auth_type"] = updates["auth_type"].value if hasattr(updates["auth_type"], "value") else updates["auth_type"]
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    success = await db_update_source(source_id, updates)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Source '{source_id}' not found in DB registry")
+
+    return {"success": True, "source_id": source_id, "updated_fields": list(updates.keys())}
+
+
+@app.delete("/agent/sources/{source_id}", tags=["Source Registry"])
+async def delete_source_endpoint(source_id: str):
+    """Delete a DB-registered source (cascades to its endpoints). YAML sources cannot be deleted."""
+    from app.agent.source_config import get_source_config
+    from app.models.db import delete_source as db_delete_source
+
+    yaml_cfg = get_source_config(source_id)
+    if yaml_cfg:
+        raise HTTPException(
+            status_code=403,
+            detail="This source is managed by YAML config and cannot be deleted via API.",
+        )
+
+    success = await db_delete_source(source_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Source '{source_id}' not found")
+
+    return {"success": True, "message": f"Source '{source_id}' and all its endpoints deleted"}
+
+
+@app.patch("/agent/sources/{source_id}/toggle", tags=["Source Registry"])
+async def toggle_source_endpoint(source_id: str, enabled: bool = Query(...)):
+    """Enable or disable a DB-registered source."""
+    from app.agent.source_config import get_source_config
+    from app.models.db import toggle_source as db_toggle_source
+
+    yaml_cfg = get_source_config(source_id)
+    if yaml_cfg:
+        raise HTTPException(status_code=403, detail="Cannot toggle YAML sources via API.")
+
+    success = await db_toggle_source(source_id, enabled)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Source '{source_id}' not found")
+
+    return {"success": True, "source_id": source_id, "enabled": enabled}
+
+
+# --- Endpoint-level management ---
+
+@app.post("/agent/sources/{source_id}/apis", tags=["Source Registry"])
+async def add_endpoint(source_id: str, payload: APIEndpointCreate):
+    """Add an API endpoint to an existing DB source."""
+    from app.agent.source_config import get_source_config
+    from app.models.db import add_api_endpoint, get_db_source
+
+    yaml_cfg = get_source_config(source_id)
+    if yaml_cfg:
+        raise HTTPException(status_code=403, detail="Cannot add endpoints to YAML sources via API.")
+
+    db_src = await get_db_source(source_id)
+    if not db_src:
+        raise HTTPException(status_code=404, detail=f"Source '{source_id}' not found in DB registry")
+
+    try:
+        ep_id = await add_api_endpoint(source_id, payload.model_dump())
+        return {"success": True, "source_id": source_id, "api_id": payload.api_id, "endpoint_record_id": ep_id}
+    except Exception as e:
+        if "duplicate key" in str(e).lower() or "unique" in str(e).lower():
+            raise HTTPException(status_code=409, detail=f"API '{payload.api_id}' already exists in source '{source_id}'")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/agent/sources/{source_id}/apis/{api_id}", tags=["Source Registry"])
+async def update_endpoint(source_id: str, api_id: str, payload: dict):
+    """Update an API endpoint in a DB source."""
+    from app.agent.source_config import get_source_config
+    from app.models.db import update_api_endpoint
+
+    yaml_cfg = get_source_config(source_id)
+    if yaml_cfg:
+        raise HTTPException(status_code=403, detail="Cannot edit endpoints on YAML sources via API.")
+
+    success = await update_api_endpoint(source_id, api_id, payload)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Endpoint '{api_id}' not found in source '{source_id}'")
+
+    return {"success": True, "source_id": source_id, "api_id": api_id}
+
+
+@app.delete("/agent/sources/{source_id}/apis/{api_id}", tags=["Source Registry"])
+async def remove_endpoint(source_id: str, api_id: str):
+    """Delete an API endpoint from a DB source."""
+    from app.agent.source_config import get_source_config
+    from app.models.db import delete_api_endpoint
+
+    yaml_cfg = get_source_config(source_id)
+    if yaml_cfg:
+        raise HTTPException(status_code=403, detail="Cannot delete endpoints on YAML sources via API.")
+
+    success = await delete_api_endpoint(source_id, api_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Endpoint '{api_id}' not found")
+
+    return {"success": True, "source_id": source_id, "api_id": api_id, "message": "Endpoint deleted"}
+
+
+@app.patch("/agent/sources/{source_id}/apis/{api_id}/toggle", tags=["Source Registry"])
+async def toggle_api_endpoint(source_id: str, api_id: str, enabled: bool = Query(...)):
+    """Enable or disable an API endpoint."""
+    from app.agent.source_config import get_source_config
+    from app.models.db import toggle_endpoint
+
+    yaml_cfg = get_source_config(source_id)
+    if yaml_cfg:
+        raise HTTPException(status_code=403, detail="Cannot toggle endpoints on YAML sources via API.")
+
+    success = await toggle_endpoint(source_id, api_id, enabled)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Endpoint '{api_id}' not found")
+
+    return {"success": True, "source_id": source_id, "api_id": api_id, "enabled": enabled}
+
+
+# --- Test fetch ---
+
+@app.post("/agent/sources/test", tags=["Source Registry"])
+async def test_fetch_endpoint(payload: TestFetchRequest):
+    """
+    Test-fetch an API endpoint without saving.
+    Validates the API by making a real request and returns a preview.
+    """
+    from app.agent.fetcher import test_fetch_api
+
+    result = await test_fetch_api(
+        base_url=payload.base_url,
+        endpoint=payload.endpoint,
+        method=payload.method,
+        params=payload.params or {},
+        headers=payload.headers or {},
+        auth_type=payload.auth_type.value,
+        auth_login_url=payload.auth_login_url,
+        auth_credentials=payload.auth_credentials or {},
+    )
+
+    return result
+
+
+# --- Source Management UI ---
+
+@app.get("/agent/manage", response_class=HTMLResponse, tags=["Source Registry"])
+async def source_management_page():
+    """Source management dashboard for business users."""
+    html_path = Path(__file__).parent / "source_manage.html"
+    if not html_path.exists():
+        return HTMLResponse(
+            content="<h1>Source management page not found</h1>",
+            status_code=404,
+        )
+    return HTMLResponse(content=html_path.read_text(), status_code=200)
 
 
 # ==========================================

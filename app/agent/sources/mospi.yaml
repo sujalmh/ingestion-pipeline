@@ -1,0 +1,71 @@
+source_id: mospi
+name: "Ministry of Statistics & Programme Implementation"
+base_url: "https://api.mospi.gov.in"
+auth:
+  type: none
+
+apis:
+  - id: cpi_index
+    name: "CPI Index (Group & SubGroup)"
+    endpoint: "/api/cpi/getCPIIndex"
+    method: GET
+    description: "Consumer Price Index from Jan 2013"
+    output_format: json
+    params:
+      Series: "Current_series_2012"
+      limit: 500000
+    schedule: "monthly"
+    period:
+      type: yearly
+      param_name: "year"
+      param_format: "%Y"
+      lookback: 1
+      initial_start: "2013"
+    metadata:
+      major_domain: "Economy"
+      sub_domain: "Inflation"
+      source: "MoSPI"
+      source_url: "https://api.mospi.gov.in"
+
+  - id: cpi_item_index
+    name: "CPI Item Level Index"
+    endpoint: "/api/cpi/getItemIndex"
+    method: GET
+    description: "Item level CPI from Jan 2014"
+    output_format: json
+    params:
+      limit: 100000
+    schedule: "monthly"
+    period:
+      type: yearly
+      param_name: "year"
+      param_format: "%Y"
+      lookback: 1
+      initial_start: "2014"
+    metadata:
+      major_domain: "Economy"
+      sub_domain: "Inflation"
+      source: "MoSPI"
+      source_url: "https://api.mospi.gov.in"
+
+  - id: wpi_records
+    name: "Wholesale Price Index"
+    endpoint: "/api/wpi/getWpiRecords"
+    method: GET
+    description: "WPI data"
+    output_format: json
+    params:
+      Format: "JSON"
+      limit: 200000
+    schedule: "monthly"
+    period:
+      type: yearly
+      param_name: "year"
+      param_format: "%Y"
+      lookback: 1
+      initial_start: "2013"
+    metadata:
+      major_domain: "Economy"
+      sub_domain: "Wholesale Prices"
+      source: "MoSPI"
+      source_url: "https://api.mospi.gov.in"
