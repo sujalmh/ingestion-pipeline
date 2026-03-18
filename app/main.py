@@ -1320,7 +1320,8 @@ async def proxy_approve_sql(
     if business_metadata:
         form_data["business_metadata"] = business_metadata
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    approve_timeout = float(settings.SQL_APPROVAL_HTTP_TIMEOUT)
+    async with httpx.AsyncClient(timeout=approve_timeout) as client:
         resp = await client.post(
             f"{settings.SQL_PIPELINE_API_URL}/approve/{sql_job_id}",
             data=form_data,
@@ -1336,7 +1337,8 @@ async def proxy_approve_sql(
             else:
                 detail_str = str(detail_str or "")
             if "incremental_load_completed" in detail_str or ("completed" in detail_str and "not awaiting" in detail_str.lower()):
-                async with httpx.AsyncClient(timeout=10) as status_client:
+                status_timeout = float(settings.SQL_STATUS_TIMEOUT)
+                async with httpx.AsyncClient(timeout=status_timeout) as status_client:
                     status_resp = await status_client.get(
                         f"{settings.SQL_PIPELINE_API_URL}/status/{sql_job_id}"
                     )
@@ -1365,16 +1367,18 @@ async def proxy_approve_sql(
 
     approve_result = resp.json()
 
-    # Poll for completion (up to 30s)
-    # SQL pipeline API may use "completed" or "incremental_load_completed" for success
+    # Poll for completion (configurable; large IL can take many minutes)
     TERMINAL_SUCCESS = ("completed", "incremental_load_completed")
     import asyncio
     final_status = approve_result.get("status", "approved")
     result_data = None
-    for _ in range(10):
-        await asyncio.sleep(3)
+    poll_iv = max(1, settings.SQL_APPROVE_COMPLETION_POLL_INTERVAL_SEC)
+    poll_n = max(1, settings.SQL_APPROVE_COMPLETION_POLL_MAX_ATTEMPTS)
+    status_to = float(settings.SQL_STATUS_TIMEOUT)
+    for _ in range(poll_n):
+        await asyncio.sleep(poll_iv)
         try:
-            status_resp = await httpx.AsyncClient(timeout=10).get(
+            status_resp = await httpx.AsyncClient(timeout=status_to).get(
                 f"{settings.SQL_PIPELINE_API_URL}/status/{sql_job_id}"
             )
             if status_resp.status_code == 200:
@@ -1390,7 +1394,7 @@ async def proxy_approve_sql(
     if final_status == "approved":
         await asyncio.sleep(2)
         try:
-            status_resp = await httpx.AsyncClient(timeout=10).get(
+            status_resp = await httpx.AsyncClient(timeout=status_to).get(
                 f"{settings.SQL_PIPELINE_API_URL}/status/{sql_job_id}"
             )
             if status_resp.status_code == 200:
@@ -1477,8 +1481,9 @@ async def batch_approve_sql(
         form_data["business_metadata"] = business_metadata
 
     # Forward to SQL pipeline API
+    batch_timeout = float(settings.SQL_BATCH_APPROVE_TIMEOUT)
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(batch_timeout)) as client:
             resp = await client.post(
                 f"{settings.SQL_PIPELINE_API_URL}/batch-approve",
                 data=form_data,
@@ -1487,7 +1492,7 @@ async def batch_approve_sql(
         raise HTTPException(
             status_code=504,
             detail=(
-                "SQL pipeline batch-approve timed out after 60 seconds. "
+                f"SQL pipeline batch-approve timed out after {settings.SQL_BATCH_APPROVE_TIMEOUT}s. "
                 "The SQL pipeline may still have accepted the request. "
                 "Run: python scripts/recover_stuck_sql_processing.py --apply --approve-individual "
                 "--source '...' --source-url '...' --released-on '...' --updated-on '...'"
@@ -1544,10 +1549,13 @@ async def _sync_batch_job(file_id: str, sql_job_id: str):
     from app.services.sql_adapter import check_sql_job_completion
 
     TERMINAL = ("completed", "incremental_load_completed", "failed")
-    for _ in range(12):
-        await asyncio.sleep(5)
+    sync_iv = max(1, settings.SQL_BATCH_JOB_SYNC_POLL_INTERVAL_SEC)
+    sync_n = max(1, settings.SQL_BATCH_JOB_SYNC_MAX_ATTEMPTS)
+    status_to = float(settings.SQL_STATUS_TIMEOUT)
+    for _ in range(sync_n):
+        await asyncio.sleep(sync_iv)
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=status_to) as client:
                 resp = await client.get(
                     f"{settings.SQL_PIPELINE_API_URL}/status/{sql_job_id}"
                 )

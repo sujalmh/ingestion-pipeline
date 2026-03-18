@@ -417,7 +417,7 @@ async def approve_sql_job(
 
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(float(settings.SQL_UPLOAD_TIMEOUT)),
+            timeout=httpx.Timeout(float(settings.SQL_APPROVAL_HTTP_TIMEOUT)),
         ) as client:
             response = await client.post(url, data=form_data)
             response.raise_for_status()
@@ -435,7 +435,13 @@ async def approve_sql_job(
         }
     except httpx.TimeoutException:
         logger.warning("Timeout approving SQL job %s", job_id)
-        return {"success": False, "error": f"Approval timeout for job {job_id}"}
+        return {
+            "success": False,
+            "error": (
+                f"Approval timeout for job {job_id} "
+                f"({settings.SQL_APPROVAL_HTTP_TIMEOUT}s)"
+            ),
+        }
     except httpx.HTTPStatusError as e:
         logger.warning("HTTP error approving SQL job %s: %s", job_id, e)
         return {"success": False, "error": f"HTTP {e.response.status_code}"}

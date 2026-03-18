@@ -57,6 +57,23 @@ class Settings:
     SQL_PIPELINE_API_URL: str = os.getenv("SQL_PIPELINE_API_URL", "http://localhost:8000")
     SQL_UPLOAD_TIMEOUT: int = int(os.getenv("SQL_UPLOAD_TIMEOUT", "300"))  # 5 min for long preprocessing
     SQL_STATUS_TIMEOUT: int = int(os.getenv("SQL_STATUS_TIMEOUT", "300"))  # 5 min
+    # HTTP timeout for POST /approve and /batch-approve (SQL API may be slow under load)
+    SQL_APPROVAL_HTTP_TIMEOUT: int = int(os.getenv("SQL_APPROVAL_HTTP_TIMEOUT", "600"))  # 10 min
+    SQL_BATCH_APPROVE_TIMEOUT: int = int(os.getenv("SQL_BATCH_APPROVE_TIMEOUT", "900"))  # 15 min
+    # Dashboard: poll SQL job status after single approve until terminal (interval × attempts)
+    SQL_APPROVE_COMPLETION_POLL_INTERVAL_SEC: int = int(
+        os.getenv("SQL_APPROVE_COMPLETION_POLL_INTERVAL_SEC", "5")
+    )
+    SQL_APPROVE_COMPLETION_POLL_MAX_ATTEMPTS: int = int(
+        os.getenv("SQL_APPROVE_COMPLETION_POLL_MAX_ATTEMPTS", "240")
+    )  # default 240×5s ≈ 20 min
+    # Background sync after batch-approve (per job)
+    SQL_BATCH_JOB_SYNC_POLL_INTERVAL_SEC: int = int(
+        os.getenv("SQL_BATCH_JOB_SYNC_POLL_INTERVAL_SEC", "10")
+    )
+    SQL_BATCH_JOB_SYNC_MAX_ATTEMPTS: int = int(
+        os.getenv("SQL_BATCH_JOB_SYNC_MAX_ATTEMPTS", "180")
+    )  # default 180×10s ≈ 30 min
     
     # Parallel processing
     PARALLEL_FILE_LIMIT: int = int(os.getenv("PARALLEL_FILE_LIMIT", "5"))
